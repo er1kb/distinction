@@ -319,6 +319,7 @@ class Classifier:
     criteria: dict[dict] = field(default_factory = dict)
     mutually_exclusive: bool = False
     n_decimals: int = 2
+    n_dims: int = None
     trust_remote_code: bool = False
     show_progress_bar: bool = True
     use_sample_probability = True
@@ -392,7 +393,7 @@ class Classifier:
                                                   # device = device,
                                                   trust_remote_code = self.trust_remote_code,
                                                   tokenizer_kwargs = {'clean_up_tokenization_spaces': True}) # this setting gets rid of a warning in Transformers 4.45.1
-        self.ndims = self.sentence_model.get_sentence_embedding_dimension()
+        self.n_dims = self.n_dims or self.sentence_model.get_sentence_embedding_dimension()
         # placeholders
         for property in 'trained training_data prediction_data'.split():
             self.__dict__[property] = None
@@ -477,7 +478,7 @@ class Classifier:
                 dispersion_rank = self.dispersion[category].argsort().argsort()
 
                 adversarial_ct_diff = np.abs(self.central_tendency[category] - adversarial_central_tendency)
-                adversarial_ct_diff_rank = self.ndims - adversarial_ct_diff.argsort().argsort()
+                adversarial_ct_diff_rank = self.n_dims - adversarial_ct_diff.argsort().argsort()
                 # Favour rows with a low dispersion and a high difference in central tendency toward other texts
                 self.combined_rank[category] = dispersion_rank + adversarial_ct_diff_rank
 

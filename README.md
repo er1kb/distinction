@@ -1,25 +1,22 @@
 # Dependencies
 Tested with:  
-* [Python](https://www.python.org/) 3.9
-* [Polars](https://github.com/pola-rs/polars) >= 0.20.30
-* [SentenceTransformers](https://sbert.net/) >= 2.2.2
-* [importlib-resources](https://pypi.org/project/importlib-resources/) >= 6.1.0
+* [Numpy](https://www.python.org/) >= 1.25.0
+* [SentenceTransformers](https://sbert.net/) >= 3.0.1
 
 # Installation
 
-
 ## From Github
 ```
-pip3 install git+https://github.com/er1kb/vector-classifier
+pip3 install git+https://github.com/er1kb/distinction
 ```
 or clone and install locally:
 ```
-git clone https://github.com/er1kb/vector-classifier.git && cd vector-classifier && pip3 install .
+git clone https://github.com/er1kb/distinction.git && cd distinction && pip3 install .
 ```
 
 ## From PyPI
 ```
-python3 -m pip install vector-classifier
+python3 -m pip install distinction
 ```
 
 
@@ -27,17 +24,26 @@ python3 -m pip install vector-classifier
 
 ## What is it
 ## Examples
-### Made-up example
+### Split records
+### Combine records
+### Classifier from training\_data - raw text
+### Classifier from training\_data - pre-encoded
+### Tune similarity
+### Tune selection
+### Tune with plots
+### Use optimized criteria from tune()
+### Prediction pipeline
 
 
 # Swedish
 
-## Syfte och användningsområde
-## Exempel
-### Påhittat exempel
+## TODO
 
 ```
-from vector-classifier import vector-classifier as vc
+import distinction as ds
+C = ds.Classifier(**kwargs)
+[*C.train(training_data = ...)]
+predictions = [*C.predict(...)]
 ```
 
 
