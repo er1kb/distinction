@@ -7,12 +7,12 @@ packages = ["src/distinction"]
 
 [project]
 name = "distinction"
-version = "0.0.1"
+version = "0.0.1.1"
 license = "MIT"
 authors = [
   { name="Erik Broman", email="mikroberna@gmail.com" },
 ]
-description = "A fast binary classifier using feature selection of sentence transformer embeddings."
+description = "A fast binary classifier built on semantic search."
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
@@ -26,7 +26,7 @@ classifiers = [
             "Programming Language :: Python :: 3 :: Only",
             "Operating System :: OS Independent",
             "Natural Language :: Swedish",
-            # "License :: OSI Approved :: MIT License",
+            "License :: OSI Approved :: MIT License",
             "Natural Language :: English",
 ]
 

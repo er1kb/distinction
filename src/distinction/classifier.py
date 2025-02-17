@@ -63,7 +63,7 @@ def split_records(records, text_column = 'text', max_sequence_length = 384, doc_
         k += 1
 
 
-def combine_two_records(binary_targets, text_separator, text_column, doc_id_column, row_id_column, chunk_id_column, overlap, original_data, a = None, b = None):
+def combine_two_records(binary_targets, text_separator, text_column, doc_id_column, row_id_column, chunk_id_column, overlap, original_data, mutually_exclusive, a = None, b = None):
     """ Merge dicts belonging to the same document, as indicated by the doc_id_column """
     from collections.abc import Sequence
 
@@ -87,21 +87,9 @@ def combine_two_records(binary_targets, text_separator, text_column, doc_id_colu
         remaining_keys = remaining_keys - { chunk_id_column }
 
     # If the second text is an empty string, ignore overlap as it might be the last text of the document
-    if len(b['text']) == 0:
+    if len(b[text_column]) == 0:
         overlap = 0
 
-    # If overlap, remove it before joining
-    # TODO: Overlap only if split by max_sequence_length (meaning chunk_id is present in a), not if split by punctuation
-    # b_text = b[text_column] if (overlap == 0 or chunk_id_column not in b) else ''.join(re.split(pattern = r'\b', string = b[text_column])[:-overlap])
-    # record = { doc_id_column: a[doc_id_column],
-    #            text_column: text_separator.join([a[text_column], b_text]) }
-
-
-    # a_text = a[text_column] if (overlap == 0 or chunk_id_column not in a) else ''.join(re.split(pattern = r'\b', string = a[text_column])[:-overlap - 1])
-    # record = { doc_id_column: a[doc_id_column],
-    #            text_column: text_separator.join([a_text, b[text_column]]) }
-
-    # TODO: Error when last record of doc is an empty string
     if (overlap == 0):
         a_text = a[text_column]
     else:
@@ -113,17 +101,36 @@ def combine_two_records(binary_targets, text_separator, text_column, doc_id_colu
     record = { doc_id_column: a[doc_id_column],
                text_column: text_separator.join([a_text, b[text_column]]) }
 
-    for target in binary_targets:
-        if not target in a and not target in b:
-            raise Exception(f'Target {target} not found in dicts: \n\n{a} \n\n{b}')
-        elif target in a and not target in b:
-            record[target] = a[target]
-        elif not target in a and target in b: record[target] = b[target]
+    if mutually_exclusive:
+        k = binary_targets[0]
+        s = binary_targets[1]
+        if not k in a and not k in b:
+            raise Exception(f'Target "{k}" not found in dicts: \n\n{a} \n\n{b}')
+        elif k in a and not k in b:
+            record[k] = a[k] if isinstance(a[k], list) else [a[k]] # a[k] needs to be a list
+            record[s] = a[s] if isinstance(a[s], list) else [a[s]] # a[k] needs to be a list
+        elif not k in a and k in b: 
+            record[k] = b[k] if isinstance(b[k], list) else [b[k]]
+            record[s] = b[s] if isinstance(b[s], list) else [b[s]]
         else:
-            record[target] = a[target] + b[target]
+            record[k] = a[k] if isinstance(a[k], list) else [a[k]]
+            record[k].append(b[k])
+            record[s] = a[s] if isinstance(a[s], list) else [a[s]]
+            record[s].append(b[s])
+    else:
+        for target in binary_targets:
+            if not target in a and not target in b:
+                raise Exception(f'Target "{target}" not found in dicts: \n\n{a} \n\n{b}')
+            elif target in a and not target in b:
+                record[target] = a[target]
+            elif not target in a and target in b: 
+                record[target] = b[target]
+            else:
+                record[target] = a[target] + b[target]
 
     for key in original_keys:
-        record[key] = a[key] if key in a else b[key]
+        # record[key] = a[key] if key in a else b[key]
+        record[key] = a.get(key) or b.get(key) or "meh"
 
     for key in remaining_keys:
         # If key present in just one of the records, grab that one
@@ -164,7 +171,7 @@ def combine_records(records, text_separator = '', text_column = 'text', doc_id_c
     doc_id = previous_record[doc_id_column]
     current_doc = list()
 
-    # strategies = 'any absolute sum most majority relative share'.split()
+    # strategies = 'any absolute sum most majority relative share mutually_exclusive'.split()
 
     if original_data:
         len1 = len(original_data)
@@ -173,7 +180,17 @@ def combine_records(records, text_separator = '', text_column = 'text', doc_id_c
         if len2 < len1:
             raise Exception(f'Doc ids missing or duplicate in at least one record of the original data. {len1} records contain {len2} unique keys.')
 
-    glue = partial(combine_two_records, binary_targets, text_separator, text_column, doc_id_column, row_id_column, chunk_id_column, overlap, original_data)
+    mutually_exclusive = (aggregation == 'mutually_exclusive')
+    if mutually_exclusive:
+        k = 'predicted'
+        s = 'score'
+        binary_targets = [k, s]
+        # if k in first_record:
+        #     if not isinstance(first_record[k], list):
+        #         first_record[k] = [first_record[k]] # Initial value needs to be a list
+
+
+    glue = partial(combine_two_records, binary_targets, text_separator, text_column, doc_id_column, row_id_column, chunk_id_column, overlap, original_data, mutually_exclusive)
 
     # Inspired by https://excamera.com/sphinx/article-islast.html - thanks!
     while True:
@@ -198,22 +215,40 @@ def combine_records(records, text_separator = '', text_column = 'text', doc_id_c
 
                 # Aggregate targets
                 if binary_targets and aggregation:
-                    for target in binary_targets: 
-                        if not type(fulltext[target]) in (int, np.integer):
-                            obj = { text_column: fulltext[text_column], target: fulltext[target] }
-                            raise Exception(f'Target variable is not integer (Python int or numpy.integer): \n {obj}')
-                        if not aggregation or aggregation in 'absolute sum'.split():
-                            pass # keep the summed number
-                        elif aggregation == 'any':
-                            fulltext[target] = 1 if fulltext[target] > 0 else 0
-                        elif aggregation == 'all':
-                            fulltext[target] = 1 if (fulltext[target] / n_rows) == 1 else 0
-                        elif aggregation in 'most majority'.split():
-                            fulltext[target] = 1 if (fulltext[target] / n_rows) >= 0.5 else 0
-                        elif aggregation in 'relative share'.split():
-                            fulltext[target] = fulltext[target] / n_rows
-                        else:
-                            raise Exception(f'Unknown aggregation_strategy: {aggregation}')
+                    if mutually_exclusive:
+                        target = binary_targets[0] # Single target: the predicted label column
+                        score = binary_targets[1]
+                        counter = list()
+                        for value in set(fulltext[target]):
+                            scores = fulltext.get(score)
+                            scores = [ scores[i] for i,prediction in enumerate(fulltext[target]) if prediction == value ]
+                            counter.append((value, fulltext[target].count(value), sum(scores) / len(scores)))
+                        counter.sort(key = lambda x: (x[1], x[2]), reverse = True)
+                        fulltext[target] = counter[0][0]
+
+                    else:
+                        for target in binary_targets: 
+                            if not isinstance(fulltext[target], (int, np.integer)):
+                                obj = { text_column: fulltext[text_column], target: fulltext[target] }
+                                print()
+                                print('problematic object:')
+                                print(obj)
+                                print()
+                                raise Exception(f'Target variable is not integer (Python int or numpy.integer) but of type {type(fulltext[target])}: \n {obj}')
+                            if not aggregation or aggregation in 'absolute sum mutually_exclusive'.split():
+                                pass # keep the summed number or list of predicted labels
+                            elif aggregation == 'any':
+                                fulltext[target] = 1 if fulltext[target] > 0 else 0
+                            elif aggregation == 'all':
+                                fulltext[target] = 1 if (fulltext[target] / n_rows) == 1 else 0
+                            elif aggregation in 'most majority'.split():
+                                fulltext[target] = 1 if (fulltext[target] / n_rows) >= 0.5 else 0
+                            elif aggregation in 'relative share'.split():
+                                fulltext[target] = fulltext[target] / n_rows
+                            else:
+                                raise Exception(f'Unknown aggregation_strategy: {aggregation}')
+
+
                 yield fulltext
 
                 current_doc.clear()
@@ -234,19 +269,32 @@ def combine_records(records, text_separator = '', text_column = 'text', doc_id_c
 
             # Aggregate targets
             if binary_targets and aggregation:
-                for target in binary_targets: 
-                    if not aggregation or aggregation in 'absolute sum'.split():
-                        pass # keep the summed number
-                    elif aggregation == 'any':
-                        fulltext[target] = 1 if fulltext[target] > 0 else 0
-                    elif aggregation == 'all':
-                        fulltext[target] = 1 if (fulltext[target] / n_rows) == 1 else 0
-                    elif aggregation in 'most majority'.split():
-                        fulltext[target] = 1 if (fulltext[target] / n_rows) >= 0.5 else 0
-                    elif aggregation in 'relative share'.split():
-                        fulltext[target] = fulltext[target] / n_rows
-                    else:
-                        raise Exception(f'Unknown aggregation_strategy: {aggregation}')
+                if mutually_exclusive:
+                    target = binary_targets[0] # Single target: the predicted label column
+                    score = binary_targets[1]
+                    counter = list()
+                    for value in set(fulltext[target]):
+                        scores = fulltext.get(score)
+                        scores = [ scores[i] for i,prediction in enumerate(fulltext[target]) if prediction == value ]
+                        counter.append((value, fulltext[target].count(value), sum(scores) / len(scores)))
+                    counter.sort(key = lambda x: (x[1], x[2]), reverse = True)
+                    fulltext[target] = counter[0][0]
+
+                else:
+                    for target in binary_targets: 
+                        if not aggregation or aggregation in 'absolute sum mutually_exclusive'.split():
+                            pass # keep the summed number or list of predicted labels
+                        elif aggregation == 'any':
+                            fulltext[target] = 1 if fulltext[target] > 0 else 0
+                        elif aggregation == 'all':
+                            fulltext[target] = 1 if (fulltext[target] / n_rows) == 1 else 0
+                        elif aggregation in 'most majority'.split():
+                            fulltext[target] = 1 if (fulltext[target] / n_rows) >= 0.5 else 0
+                        elif aggregation in 'relative share'.split():
+                            fulltext[target] = fulltext[target] / n_rows
+                        else:
+                            raise Exception(f'Unknown aggregation_strategy: {aggregation}')
+
 
             yield fulltext
             break
@@ -255,25 +303,60 @@ def combine_records(records, text_separator = '', text_column = 'text', doc_id_c
 # Helpers
 
 def get_used_keys(records):
+    """ Get list of keys in iterable of row-based dicts """
     return set().union(*(d.keys() for d in records))
 
 
+def tally_ones(a,b):
+    """ Count ones """
+    for k in b.keys():
+        a[k] += 1 if (b.get(k) and b.get(k) == 1) else 0
+    return a
+
+
+def count_used_keys(records, ignore = ''):
+    """ Count ones, per target, ignoring named columns (separated by whitespace) """
+    ignore = ignore.split()
+    records = [*records]
+    initial_counts = { k:0 for k in get_used_keys(records) }
+    counts = reduce(tally_ones, records, initial_counts)
+    for key in ignore:
+        counts.pop(key, None)
+    return counts
+
+
 def filter_keys(records, keys):
+    """ Keep only certain keys in iterable of row-based dicts """
     for r in records: 
         yield { key:r[key] for key in keys if key in r }
 
 
+def ones_to_int(records, keys):
+    """ Make sure ones are of type int, if they happen to be valid integer values as string """
+    for record in records: 
+        for key in keys:
+            if key in record:
+                try:
+                    record[key] = int(record[key])
+                except:
+                    pass
+        yield record
+
+
 def remove_unused_keys(records, exceptions):
+    """ Remove unused keys in iterable of row-based dicts """
     for r in records:
         yield { k:v for k,v in r.items() if k in exceptions or (v and not v == 0) }
 
 
 def dict_to_records(d):
+    """ Convert column-based dict to iterable of row-based dicts """
     for col in zip(*d.values()):
         yield dict(zip(d, col))
 
 
 def records_to_dict(records, keys):
+    """ Convert iterable of row-based dicts to a column-based dict """
     d = dict((key, None) for key in keys)
     for key in keys:
         d[key] = [None] * len(records)
@@ -301,6 +384,40 @@ def matrix_to_dict(matrix, keys):
         d[key] = matrix[:,i]
         i += 1
     return d
+
+
+def confusions(validation_matrix, similarity_matrix, keys, nrows, n_decimals):
+    """ Produce a confusion matrix with the actual and predicted values """
+    confusion_matrix = np.zeros((len(keys), len(keys)))
+    for i,key1 in enumerate(keys):
+        for j,key2 in enumerate(keys):
+            confusion_matrix[i,j] = np.sum(validation_matrix[:,i] * similarity_matrix[:,j])
+    actual_shares = np.round(np.sum(validation_matrix, axis=0) / nrows, n_decimals)
+    predicted_shares = np.round(np.sum(similarity_matrix, axis=0) / nrows, n_decimals)
+    return (keys, np.round(confusion_matrix / nrows, n_decimals), actual_shares, predicted_shares)
+
+
+def clamp(n, min, max):
+    """ Clamp a number to a range. """
+    if n < min:
+        return min
+    elif n > max:
+        return max
+    else:
+        return n
+
+
+def contains_minimum(a,b,c):
+    return ((b - a) <= 0) and ((c - b) >= 0)
+
+
+def subdivide(a, b, center = False):
+    if center:
+        margin = (b - a) / 4
+        mid = (a + b) / 2
+        return (mid - margin, mid, mid + margin)
+    else:
+        return (a, (a + b) / 2, b)
 
 
 
@@ -355,10 +472,10 @@ class Classifier:
         Whether to round predictions to 0 or 1. False means the raw similarities are returned, which is handy if you want to evaluate the model's performance, eg by sorting the predictions in descending order or similarity score and reading through the texts. 
 
     default_cutoff: Optional[float]
-        You should provide custom cutoffs for all the target variables (see the criteria parameter below and the tune function), but if not there is the default.
+        You should provide custom cutoffs for all the target variables (see the criteria parameter below and the tune method), but if not there is the default.
 
     criteria: Optional[dict(dict)]
-        The cutoffs and selections for each variable. Best optimized by using the tune function. 
+        The cutoffs and selections for each variable. Best optimized by using the tune method. 
 
     mutually_exclusive: Optional[bool]
         Set to True if only one of the target variables can equal 1.
@@ -411,7 +528,7 @@ class Classifier:
             raise Exception('No training data given')
 
         # Unpack training data, in case it's a generator
-        self.training_data = [*self.training_data]
+        self.training_data = [*ones_to_int(self.training_data, self.targets)]
         self.training_nrows = len(self.training_data)
         self.training_data = [*remove_unused_keys(self.training_data, exceptions = [self.text_column])]
         # Infer the target columns if not explicitly given
@@ -465,22 +582,17 @@ class Classifier:
             self.central_tendency[category] = np.apply_along_axis(np.median, 0, vectors)
             self.dispersion[category] = np.apply_along_axis(np.std, 0, vectors)
 
-            if self.default_selection == 1:
-                # If all dimensions are to be used, assign all ones to the filter mask
-                self.filter[category] = np.ones(vectors.shape[1], dtype = int)
-                # TODO: calculate combined_rank dummy variable
-            else:
-                # Calculate central tendency and dispersion for all the other rows.
-                adversarial_indices = sorted(list(set([i for i in range(self.training_nrows) if i not in indices]) - self.confounder_indices))
-                adversarial_vectors = self.training_embeddings[adversarial_indices, :]
-                adversarial_central_tendency = np.apply_along_axis(np.median, 0, adversarial_vectors)
+            # Calculate central tendency and dispersion for all the other rows.
+            adversarial_indices = sorted(list(set([i for i in range(self.training_nrows) if i not in indices]) - self.confounder_indices))
+            adversarial_vectors = self.training_embeddings[adversarial_indices, :]
+            adversarial_central_tendency = np.apply_along_axis(np.median, 0, adversarial_vectors)
 
-                dispersion_rank = self.dispersion[category].argsort().argsort()
+            dispersion_rank = self.dispersion[category].argsort().argsort()
 
-                adversarial_ct_diff = np.abs(self.central_tendency[category] - adversarial_central_tendency)
-                adversarial_ct_diff_rank = self.n_dims - adversarial_ct_diff.argsort().argsort()
-                # Favour rows with a low dispersion and a high difference in central tendency toward other texts
-                self.combined_rank[category] = dispersion_rank + adversarial_ct_diff_rank
+            adversarial_ct_diff = np.abs(self.central_tendency[category] - adversarial_central_tendency)
+            adversarial_ct_diff_rank = self.n_dims - adversarial_ct_diff.argsort().argsort()
+            # Favour rows with a low dispersion and a high difference in central tendency toward other texts
+            self.combined_rank[category] = dispersion_rank + adversarial_ct_diff_rank
 
 
     def assemble_filter(self):
@@ -493,14 +605,23 @@ class Classifier:
             else:
                 self.selections[category] = self.default_selection
         for category in self.targets:
-            p = np.percentile(self.combined_rank[category], self.selections[category] * 100)
-            self.filter[category] = np.where(self.combined_rank[category] < p, 1, 0)
+            if self.selections[category] == 1:
+                # If all dimensions are to be used, assign all ones to the filter mask
+                self.filter[category] = np.ones(self.n_dims, dtype = int)
+            else:
+                p = np.percentile(self.combined_rank[category], self.selections[category] * 100)
+                self.filter[category] = np.where(self.combined_rank[category] < p, 1, 0)
 
 
-    def train(self, training_data, pre_encoded = False):
-        if not training_data:
-            raise Exception('Missing input for training. You need to provide training data (list of dicts) with either a text column or pre-encoded embeddings.')
-        self.training_data = training_data
+    def train(self, data, pre_encoded = False):
+
+        self.training_data = data or self.training_data
+        if not self.training_data:
+            raise Exception('Missing input data for training. You need to provide training data (list of dicts) with either a text column or pre-encoded embeddings.')
+
+        # if not data:
+        #     raise Exception('Missing input for training. You need to provide training data (list of dicts) with either a text column or pre-encoded embeddings.')
+        # self.training_data = data
         self.separate_training_data()
         self.encode_training_data(pre_encoded)
         self.reduce()
@@ -581,7 +702,11 @@ class Classifier:
 
     def binarize(self):
         for t in self.targets:
-            self.prediction_indices[t] = [i for i,v in enumerate(self.prediction_data) if t in v and v[t] == 1]
+            self.prediction_indices[t] = [i for i,v in enumerate(self.prediction_data) if t in v and v[t] and int(v[t]) == 1]
+        # print()
+        # print('self.prediction_indices["Funktion"]:')
+        # print(self.prediction_indices['Funktion'])
+        # print()
         self.test_probabilities = { k:round(len(v) / self.prediction_nrows, self.n_decimals) for k,v in self.prediction_indices.items() }
         # redundant_columns = set(self.criteria) - set(self.targets)
         # print(f'Redundant criteria not found in the data: {", ".join(redundant_columns)}' if len(redundant_columns) > 0 else '')
@@ -626,18 +751,20 @@ class Classifier:
     def max_category(self):
         """Return the most likely category, out of all candidates"""
         self.output_fieldnames = [self.text_column] + self.targets
-        similarity_matrix = np.zeros((self.prediction_nrows, len(self.targets)))
-        i = 0
-        for target in self.targets:
-            similarity_matrix[:,i] = self.similarities[target]
-            i += 1
+        # similarity_matrix = np.zeros((self.prediction_nrows, len(self.targets)))
+        # i = 0
+        # for target in self.targets:
+        #     similarity_matrix[:,i] = self.similarities[target]
+        #     i += 1
+        similarity_matrix = dict_to_matrix(self.similarities, self.targets)
         self.index_predictions = np.argmax(similarity_matrix, axis = 1).astype(int)
         max_scores = np.max(similarity_matrix, axis = 1)
 
-        other_keys = sorted(list(get_used_keys(self.prediction_data) - set(self.targets)))
+        # other_keys = sorted(list(get_used_keys(self.prediction_data) - set(self.targets)))
+        other_keys = sorted(list(get_used_keys(self.prediction_data))) # Keep original variables
         other_data = filter_keys(self.prediction_data, other_keys)
-        predicted_data = dict_to_records({'label': [ self.targets[index] for index in self.index_predictions ],
-                                          'score': [ score for score in max_scores ]
+        predicted_data = dict_to_records({'predicted': [ self.targets[index] for index in self.index_predictions ],
+                                          'score': [ np.round(score, self.n_decimals) for score in max_scores ]
                                          })
         self.output = zip_longest(other_data, predicted_data)
 
@@ -651,17 +778,17 @@ class Classifier:
         self.output = zip_longest(other_data, predicted_data)
 
 
-    def predict(self, prediction_data = None, pre_encoded = False, validation = False):
+    def predict(self, data = None, pre_encoded = False, validation = False):
         if not self.trained:
             raise Exception('You need to train the model (or load a trained model from file) before calling the predict method')
         if validation and not self.discrete:
             sys.exit('Cannot do validation of continuous data, as there is nothing to compare with. Set discrete = True when validation = True.')
-        # self.assemble_filter() # moved to the train method and called separately by tune()
-        if prediction_data:
-            # self.prediction_data = prediction_data
-            self.prediction_data = [*prediction_data]
+        if data:
+            self.prediction_data = [*ones_to_int(data, self.targets)]
             self.prediction_nrows = len(self.prediction_data)
             self.encode_prediction_data(pre_encoded)
+        if not self.prediction_data:
+            raise Exception('Need to provide the classifier with prediction data.')
         self.measure_similarity()
         # if self.discrete:
         self.binarize()
@@ -694,17 +821,29 @@ class Classifier:
         validation_matrix = records_to_dict(self.validation_data, keys)
         validation_matrix = dict_to_matrix(validation_matrix, keys)
 
-        # Error rate by variable
+        # Error rate by target variable
         if self.mutually_exclusive:
-            validation_matrix = np.argmax(validation_matrix, axis = 1)
-            diff_matrix = np.abs(validation_matrix - self.index_predictions)
+
+            similarity_matrix = dict_to_matrix(self.similarities, self.targets)
+            similarity_matrix = (similarity_matrix == similarity_matrix.max(axis = 1, keepdims = True)).astype(int)
+
+            diff_matrix = validation_matrix - similarity_matrix
             nrows = diff_matrix.shape[0]
-            self.error_rate = dict(overall = np.sum(diff_matrix) / nrows)
+
+            false_positive = np.round(np.sum(np.where(diff_matrix < 0, 1, 0), axis = 0) / nrows, decimals = self.n_decimals)
+            false_negative = np.round(np.sum(np.where(diff_matrix > 0, 1, 0), axis = 0) / nrows, decimals = self.n_decimals)
+            overall = np.round(np.sum(np.abs(diff_matrix), axis = 0) / nrows, decimals = self.n_decimals)
+            self.error_rate = dict(false_positive = dict(zip(keys, false_positive)),
+                                   false_negative = dict(zip(keys, false_negative)),
+                                   overall = dict(zip(keys, overall)))
+
+            # Confusion matrix
+            # rows: validation, columns: predicted
+            self.confusion = confusions(validation_matrix, similarity_matrix, keys, nrows, self.n_decimals)
+
 
             # Error rate by row
             # For mutually exclusive variables, the error for a single row is all or nothing
-            overall = np.round(np.sum(np.abs(diff_matrix), axis = 1) / 2, decimals = self.n_decimals)
-            self.error_rate_by_row = [dict(overall=o) for o in overall]
 
         else:
             prediction_matrix = dict_to_matrix(self.predictions, keys)
@@ -725,6 +864,169 @@ class Classifier:
             overall = np.round(np.sum(np.abs(diff_matrix), axis = 1) / ncols, decimals = self.n_decimals)
             self.error_rate_by_row = [ dict(false_positive=p, false_negative=n, overall=o)
                                        for (p,n,o) in zip(false_positive, false_negative, overall) ]
+
+
+    def calculate_loss(self, all = False):
+        self.assemble_filter()
+        _ = [*self.predict(validation = True)]
+        if all:
+            return self.error_rate
+        else:
+            return { target: abs(self.error_rate.get('false_positive').get(target) - self.error_rate.get('false_negative').get(target)) for target in self.targets }
+
+
+
+    def tune(self, data = None, pre_encoded = False, param_name = 'similarity', param_range = (0, 1, 0.01), plot = False, show_progress = True):
+
+        if not data and not self.prediction_data:
+            raise Exception('Need to provide the classifier with prediction data.')
+        if data and not self.prediction_data:
+            self.prediction_data = [*ones_to_int(data, self.targets)]
+            self.prediction_nrows = len(self.prediction_data)
+            self.encode_prediction_data(pre_encoded)
+
+        unit = clamp(param_range[2], 0, 1)
+        start = clamp(param_range[0], unit, 1)# - unit) 
+        stop = clamp(param_range[1], unit, 1)# - unit)
+
+        targets = self.targets.copy()
+        confounders = self.confounders.copy()
+        optimal_values = dict(((k, None) for k in targets))
+        fp = dict(((k, []) for k in targets))
+        fn = dict(((k, []) for k in targets))
+        overall_errors = dict(((k, []) for k in targets))
+        absdiff = dict(((k, []) for k in targets))
+
+        lower_end = list()
+        upper_end = list()
+
+        parameter_multiplier = 1 / unit
+        parameter_range = [x / parameter_multiplier for x in range(round(start * parameter_multiplier),
+                                               round((stop + unit) * parameter_multiplier),
+                                               round(unit * parameter_multiplier))]
+        n_iterations = len(parameter_range)
+
+        # LINE_UP = '\033[1A'
+        # LINE_CLEAR = '\x1b[2K'
+        start_time = time.time()
+        icon = cycle(['  |   ', '  _   ', '  __  ', '   __ ', '    __', '     _', '     |', 
+                      '     \u203e', '    \u203e\u203e', '   \u203e\u203e ', '  \u203e\u203e  ', '  \u203e   '])
+
+        for i,iteration in enumerate(parameter_range):
+            if i > 0:
+                current_time = time.time()
+                time_elapsed = current_time - start_time
+                time_left = time_elapsed * ((n_iterations - i) / i)
+                if show_progress:
+                    # Display progress
+                    # print(LINE_UP, end=LINE_CLEAR)
+                    print(f'{next(icon)} Iteration {i + 1} of {n_iterations} estimating {param_name}, time left: {round(time_left)} seconds', end='\r', flush = True)
+
+            for target in self.targets: 
+                # # Merge parameter with existing criteria for each target
+                if self.criteria.get(target):
+                    self.criteria[target].update({ param_name: iteration })
+                else:
+                    self.criteria[target] = { param_name: iteration }
+
+            current_error = self.calculate_loss(all = True)
+
+            for target in self.targets.copy():
+                fp[target].append(current_error['false_positive'][target])
+                fn[target].append(current_error['false_negative'][target])
+                overall_errors[target].append(current_error['overall'][target])
+                absdiff[target].append(abs(current_error['false_positive'].get(target) - current_error['false_negative'].get(target)))
+
+                if not plot and param_name == self.sim_key: 
+                    if i == 0: # Need 2 iterations to compare
+                        worsening = False
+                    else: 
+                        if param_name == self.sim_key:
+                            worsening = (fp[target][-1] - fn[target][-1]) < 0
+                        last_iteration = i == (n_iterations - 1)
+
+                        if last_iteration or worsening:
+                            # If optimal input value found, stop trying to optimize the target at hand
+                            # If last iteration and no improvement, return the last value
+                            if last_iteration and (not worsening):
+                                upper_end.append(target)
+                            optimal_values[target] = { param_name: parameter_range[i-1 if worsening else i] }
+                            if i == 1:
+                                lower_end.append(target)
+                            self.remove_target(target)
+                        if len(self.targets) == 0:
+                            for target in targets:
+                                # if target in self.criteria:
+                                if self.criteria.get(target):
+                                    self.criteria[target].update(optimal_values[target])
+                                    # optimal_values[target] = {**self.criteria[target], 
+                                    #                      **optimal_values[target]}
+                                else:
+                                    self.criteria[target] = optimal_values[target]
+                            if upper_end:
+                                print()
+                                warnings.warn(f'Optimal {param_name} was found to be the very last value for the following targets: {", ".join(lower_end)}. Consider extending the lower end of the range. ', stacklevel = 2)
+                                print()
+                            if not last_iteration:
+                                print()
+                                print('returning early')
+                                print()
+                            if lower_end:
+                                print()
+                                warnings.warn(f'Optimal {param_name} was found to be the very first value for the following targets: {", ".join(lower_end)}. Consider extending the lower end of the range. ', stacklevel = 2)
+                                print()
+
+            if len(self.targets) == 0:
+                break
+
+        print()
+        if plot or param_name == self.selection_key:
+
+            min_error = { key: None for key in targets }
+            min_error_index = { key: None for key in targets }
+            for target in targets:
+                if param_name == self.sim_key:
+                    loss = absdiff[target]
+                elif param_name == 'selection':
+                    loss = overall_errors[target]
+                min_error[target] = min(loss)
+                min_error_index[target] = loss.index(min_error[target])
+                optimal_values[target] = { param_name: parameter_range[min_error_index[target]] }
+
+            for target in targets:
+                if self.criteria.get(target):
+                    self.criteria[target].update(optimal_values[target])
+                else:
+                    self.criteria[target] = optimal_values[target]
+
+        if plot:
+            try:
+                import plotext as plt
+            except ImportError as s:
+                raise Exception('Optional dependency plotext (>=5.3.2) needed for plotting. Otherwise set plot = False.')
+
+            for target in targets:
+                plt.vline(min_error_index[target] + 1, 'black')
+                plt.plot(overall_errors[target], label = f'{target} overall error')
+                plt.plot(fp[target], label = f'{target} false positive')
+                plt.plot(fn[target], label = f'{target} false negative')
+                plt.xticks(list(range(n_iterations)), parameter_range)
+                plt.title(f'{target} validation error by {param_name}')
+                plt.build()
+                cwd = os.getcwd()
+                plotpath = os.path.join(cwd, 'plots')
+                if not os.path.exists(plotpath):
+                    os.mkdir(plotpath)
+                plt.save_fig(f'{plotpath}/{target}.html')
+                plt.clear_figure()
+
+        # Update and run the tuned classifier once more to refresh the error rate and so on
+        self.targets = targets
+        self.confounders = confounders
+        # self.criteria = optimal_values
+        self.assemble_filter()
+        _ = [*self.predict(validation = True)]
+
 
 
     def write_csv(self, filename):
@@ -785,18 +1087,45 @@ class Classifier:
                     print(f'{target:<{w}}{self.sample_probabilities[target]:<{w}}{self.test_probabilities[target]:<{w}}')
 
 
-    def error(self, w = 20):
+    def error(self, w = 20, margin = 5):
         print('\n' * 2)
-        if not self.error_rate or not self.error_rate_by_row:
+        if not self.error_rate:
             raise Exception('Error rate not calculated. Please run predict with validation = True, then try again.')
-        # w = 20
         for category in 'targets confounders'.split():
             xs = [x for x in self.targets if not x in self.confounders] if category == 'targets' else self.confounders
             print()
-            print(f'{category.upper():<{w}}{"OVERALL":<{w}}{"FALSE POSITIVE":<{w}}{"FALSE NEGATIVE":<{w}}{"THRESHOLD":<{w}}')
-            print('-' * (w * 5))
-            for target in xs:
-                print(f'{target:<{w}}{self.error_rate["overall"][target]:<{w}}{self.error_rate["false_positive"][target]:<{w}}{self.error_rate["false_negative"][target]:<{w}}{self.cutoffs[target]:<{w}}')
+            if self.mutually_exclusive:
+                # No confounders for mutually exclusive data
+                if category == 'targets':
+                    print(f'{category.upper():<{w}}{"OVERALL":<{w}}{"FALSE POSITIVE":<{w}}{"FALSE NEGATIVE":<{w}}')
+                    print('-' * (w * 5))
+                    for target in xs:
+                        print(f'{target:<{w}}{self.error_rate["overall"][target]:<{w}}{self.error_rate["false_positive"][target]:<{w}}{self.error_rate["false_negative"][target]:<{w}}')
+                    print('\n' * 2)
+                    w = w // 2
+                    keys, confusion_matrix, actual_shares, predicted_shares = self.confusion
+                    keys = [key[:(w - margin)] + ('...' if len(key) > (w - margin) else '') for key in keys ]
+                    print('CONFUSION MATRIX')
+                    print('rows: validation/actual, columns: predicted, values sum to 1 (=100%)')
+                    print('Actual/Predicted % (row and column sum resp.) are calculated before rounding')
+                    print('-' * (w * (len(keys) + 3)))
+                    print((" " * w) + ''.join([f"{key:<{w}}" for key in keys]) + ' ' * (w//2) + 'Actual %')
+                    for i in range(confusion_matrix.shape[0]):
+                        row = ''.join([f"{x:<{round(w)}}" for x in confusion_matrix[i,:]])
+                        print(f'{keys[i]:<{w}}' + row + ' ' * (w//2) + f'{actual_shares[i]:<{w}}')
+
+                    print()
+                    row = ''.join([f"{x:<{round(w)}}" for x in predicted_shares])
+                    print(f'{"Pred. %":<{w}}' + row + ' ' * (w//2) + f'{1:<{w}}')
+                    #
+                    # print('actual_shares:')
+                    # print(actual_shares)
+
+            else:
+                print(f'{category.upper():<{w}}{"OVERALL":<{w}}{"FALSE POSITIVE":<{w}}{"FALSE NEGATIVE":<{w}}{"THRESHOLD":<{w}}')
+                print('-' * (w * 5))
+                for target in xs:
+                    print(f'{target:<{w}}{self.error_rate["overall"][target]:<{w}}{self.error_rate["false_positive"][target]:<{w}}{self.error_rate["false_negative"][target]:<{w}}{self.cutoffs[target]:<{w}}')
 
 
     def error_by_row(self):
@@ -805,6 +1134,8 @@ class Classifier:
 
 
     def examples(self, targets = None, n = 10, w = 10, margin = 5):
+        if self.mutually_exclusive:
+            raise Exception('Classifier.examples() method not yet available for mutually exclusive data.')
         targets = targets or self.targets
         sim_w = self.n_decimals + margin
         print('\n' * 2)
@@ -816,204 +1147,69 @@ class Classifier:
             zeros[t] = sorted([(i,v, self.prediction_data[i][self.text_column]) for i,v in enumerate(self.similarities[t]) if v < self.cutoffs[t]], key = lambda x: x[1], reverse = True)
             _n = min(n, len(ones[t]) // 2, len(zeros[t]) // 2)
 
-            print(f'{t}, threshold = {self.cutoffs[t]}')
-            print(f'{"TOP ONES (best matches)":<{w * 3 + sim_w}}{"BOTTOM ONES (look for false positives)":<{w * 3 + sim_w}}{"TOP ZEROS (look for false negatives)":<{w * 3 + sim_w}}')
-            print(f'{"Text":<{w * 3}}{"Sim.":<{sim_w}}' * 3)
-            print('-' * 3 * (3 * w + sim_w))
-            m = len(ones[t]) - 1
-            for i in range(_n):
-                print(f'{ones[t][i][2][:(w * 3) - margin] + ("..." if len(ones[t][i][2]) > (w * 3) - margin else ""):<{(w * 3)}}{ones[t][i][1]:<{sim_w},.{self.n_decimals}f}{ones[t][m - _n + i][2][:(w * 3) - margin] + ("..." if len(ones[t][m-n+i][2]) > (w * 3) - margin else ""):<{(w * 3)}}{ones[t][m-n+i][1]:<{sim_w},.{self.n_decimals}f}{zeros[t][i][2][:(w * 3) - margin] + ("..." if len(zeros[t][i][2]) > (w * 3) - margin else ""):<{(w * 3)}}{zeros[t][i][1]:<{sim_w},.{self.n_decimals}f}')
+            target_count = len(self.prediction_indices[t])
+            if target_count < n:
+                print(f'Target {t} not displayed. Count is {target_count} ({target_count / self.prediction_nrows * 100:.{self.n_decimals}f}% of the prediction data), which is less than n = {n}.')
+            else:
+                print(f'{t}, threshold = {self.cutoffs[t]}, count = {target_count} / {self.prediction_nrows} = {target_count / self.prediction_nrows * 100:.{self.n_decimals}f}%')
+                print(f'{"TOP ONES (best matches)":<{w * 3 + sim_w}}{"BOTTOM ONES (look for false positives)":<{w * 3 + sim_w}}{"TOP ZEROS (look for false negatives)":<{w * 3 + sim_w}}')
+                print(f'{"Text":<{w * 3}}{"Sim.":<{sim_w}}' * 3)
+                print('-' * 3 * (3 * w + sim_w))
+                m = len(ones[t]) - 1
+                for i in range(_n):
+                    print(f'{ones[t][i][2][:(w * 3) - margin] + ("..." if len(ones[t][i][2]) > (w * 3) - margin else ""):<{(w * 3)}}{ones[t][i][1]:<{sim_w},.{self.n_decimals}f}{ones[t][m - _n + i][2][:(w * 3) - margin] + ("..." if len(ones[t][m-n+i][2]) > (w * 3) - margin else ""):<{(w * 3)}}{ones[t][m-n+i][1]:<{sim_w},.{self.n_decimals}f}{zeros[t][i][2][:(w * 3) - margin] + ("..." if len(zeros[t][i][2]) > (w * 3) - margin else ""):<{(w * 3)}}{zeros[t][i][1]:<{sim_w},.{self.n_decimals}f}')
             print('\n' * 2)
 
 
 
-def tune(training_data, prediction_data, parameter = None, param_name = None, param_range = None, criteria = None, default_cutoff = None, default_selection = None, plot = False, return_errors = False, show_progress = True, **kwargs):
-    if kwargs['mutually_exclusive']: 
-        raise Exception(f'Argument mutually_exclusive needs to be "False". There is no per-variable parameter to optimize for mutually exclusive variables, as the assigned category is simply the one with the maximum similarity. However, if the right answers are available you can "validate" mutually exclusive data.')
-    if not parameter and not param_name:
-        raise Exception('You need to supply a parameter (dict: name, start, stop, step) OR param_name (str: similarity or selection) and param_range (tuple: (start, stop, step))')
+    def to_pipeline(self, n = 100, split = True, timeout = 10, **kwargs):
 
-    # For shorthand, use parameter = 'similarity' and range = (0, 1, 0.01)
-    if param_name and param_range:
-        start = param_range[0]
-        stop = param_range[1] if len(param_range) == 2 else 1
-        step = param_range[2] if len(param_range) == 3 else 0.01
-        parameter = dict(name = param_name, start = start, stop = stop, step = step)
+        # Make sure our classifier is using the latest text column for prediction, if given in kwargs
+        if kwargs.get('text_column'):
+            text_column = kwargs.get('text_column')# or self.text_column
+            if text_column != self.text_column:
+                print(f'Using text column "{text_column}" for prediction instead of "{self.text_column}" which was most likely used for training.')
+            self.text_column = text_column
 
-    # C = Classifier(n_decimals = kwargs['n_decimals'] if 'n_decimals' in kwargs else 5, **kwargs)
-    C = Classifier(n_decimals = kwargs.get('n_decimals') or 5, **kwargs)
-    C.default_cutoff = default_cutoff or C.default_cutoff
-    C.default_selection = default_selection or C.default_selection
-    C.train(training_data = training_data)
-    targets = C.targets.copy()
-    criteria = criteria or dict()
-    _criteria = { target: {} for target in targets }
+        aggregation = kwargs.get('aggregation')
+        if not self.discrete:
+            if not aggregation or aggregation in "absolute sum relative share".split():
+                self.discrete = True
+                print()
+                print(f'Classifier set to produce discrete values, given that argument aggregation = "{aggregation}".')
+                print()
 
-    parameter['start'] = parameter['start'] if parameter['start'] > 0 else 0.01
-    parameter_name = parameter['name']
-    parameter_multiplier = 1 / parameter['step'] 
-    parameter_range = [x / parameter_multiplier for x in range(round(parameter['start'] * parameter_multiplier),
-                                           round((parameter['stop'] + parameter['step']) * parameter_multiplier),
-                                           round(parameter['step'] * parameter_multiplier))]
-    n_iterations = len(parameter_range)
-    overall_errors = { key: list() for key in targets }
-    fp = { key: list() for key in targets }
-    fn = { key: list() for key in targets }
-    previous_loss = { key: 1 for key in targets }
-    optimal_values = { key: { parameter_name: None } for key in targets }
-    min_errors = { key: None for key in targets }
-    lower_end = list()
-    upper_end = list()
-    _ = [*C.predict(prediction_data)]
+        predict_args = "pre_encoded validation".split()
+        predict_args = { k:v for k,v in kwargs.items() if k in predict_args }
 
-    LINE_UP = '\033[1A'
-    LINE_CLEAR = '\x1b[2K'
-    start_time = time.time()
-    icon = cycle(['  |   ', '  _   ', '  __  ', '   __ ', '    __', '     _', '     |', 
-                  '     \u203e', '    \u203e\u203e', '   \u203e\u203e ', '  \u203e\u203e  ', '  \u203e   '])
-    for i,iteration in enumerate(parameter_range):
-        if i > 0:
-            current_time = time.time()
-            time_elapsed = current_time - start_time
-            time_left = time_elapsed * ((n_iterations - i) / i)
-            if show_progress:
-                print(LINE_UP, end=LINE_CLEAR)
-                print(f'{next(icon)} Iteration {i + 1} of {n_iterations} estimating {parameter_name}, time left: {round(time_left)} seconds', end='\r', flush = True)
-        for target in C.targets: 
-            if target in criteria:
-                _criteria[target] = {**criteria[target], 
-                                     **{ parameter_name: iteration}}
+        split_args = "text_column max_sequence_length doc_id_column row_id_column chunk_id_column overlap per_sentence".split()
+        split_args = { k:v for k,v in kwargs.items() if k in split_args }
+
+        combine_args = "text_separator text_column doc_id_column row_id_column chunk_id_column original_data binary_targets aggregation overlap".split()
+        combine_args = { k:v for k,v in kwargs.items() if k in combine_args }
+
+        from types import GeneratorType
+
+        def inner_function(prediction_data):
+            if isinstance(prediction_data, (list, tuple)):
+                # prediction_data = iter(prediction_data)
+                # prediction_data = prediction_data.__iter__()
+                prediction_data = (r for r in prediction_data)
+
+            if isinstance(prediction_data, GeneratorType):
+
+                prediction_data = ones_to_int(prediction_data, self.targets)
+                prediction_data = [*prediction_data] # Need to unpack, no way to copy a generator
+                original_data = prediction_data.copy()
+                if split:
+                    prediction_data = split_records(prediction_data, **split_args)
+                predicted = self.predict(data = prediction_data, **predict_args)
+                if split:
+                    predicted = combine_records(predicted, original_data = original_data, binary_targets = self.targets, **combine_args)
+                yield from predicted
             else:
-                _criteria[target] = { parameter_name: iteration }
-        C.criteria = _criteria
-        C.assemble_filter()
-        _ = [*C.predict(validation = True)]
-        for target in C.targets.copy():
-            overall_errors[target].append(C.error_rate['overall'][target])
-            fp[target].append(C.error_rate['false_positive'][target])
-            fn[target].append(C.error_rate['false_negative'][target])
-            if not plot:
-                if parameter_name == 'similarity':
-                    current_loss = abs(C.error_rate['false_positive'][target] - C.error_rate['false_negative'][target])
-                elif parameter_name == 'selection':
-                    current_loss = overall_errors[target][-1]
-                worsening = current_loss > previous_loss[target]
-                last_iteration = i == (n_iterations - 1)
-                if last_iteration or worsening:
-                    # If optimal input value found, stop trying to optimize the target at hand
-                    # If last iteration and no improvement, return the last value
-                    index = i-1 if worsening else i
-                    if last_iteration and (not worsening):
-                        upper_end.append(target)
-                    optimal_values[target] = { parameter_name: parameter_range[index] }
-                    if i == 1 and n_iterations > 2:
-                        lower_end.append(target)
-                    C.remove_target(target)
-                if len(C.targets) == 0:
-                    for t in targets:
-                        if t in criteria:
-                            optimal_values[t] = {**criteria[t], 
-                                                 **optimal_values[t]}
-                    if upper_end:
-                        print()
-                        warnings.warn(f'Optimal {parameter_name} was found to be the very last value for the following targets: {", ".join(lower_end)}. Consider extending the lower end of the range. ', stacklevel = 2)
-                        print()
-                    if not last_iteration:
-                        print()
-                        print('returning early')
-                        print()
-                    if lower_end:
-                        print()
-                        warnings.warn(f'Optimal {parameter_name} was found to be the very first value for the following targets: {", ".join(lower_end)}. Consider extending the lower end of the range. ', stacklevel = 2)
-                        print()
-                    return optimal_values
-                previous_loss[target] = current_loss
-        print()
-    if plot: 
-        try:
-            import plotext as plt
-        except ImportError as s:
-            raise Exception('Optional dependency plotext (>=5.3.2) needed for plotting. Otherwise set plot = False.')
-        for target in C.targets:
-            if parameter_name == 'similarity':
-                loss = [abs(a-b) for a,b in zip(fp[target], fn[target])]
-            elif parameter_name == 'selection':
-                loss = overall_errors[target]
-            min_errors[target] = min(loss)
-            min_error_index = loss.index(min_errors[target])
-            optimal_values[target] = { parameter_name: parameter_range[min_error_index] }
+                raise Exception(f'Unknown/incompatible data type: {type(prediction_data)}')
 
-            # plt.vline(min_error_index + 1, 'black')
-            plt.vline(min_error_index, 'black')
-            plt.plot(overall_errors[target], label = f'{target} overall error')
-            plt.plot(fp[target], label = f'{target} false positive')
-            plt.plot(fn[target], label = f'{target} false negative')
-            plt.xticks(list(range(n_iterations)), parameter_range)
-            plt.title(f'{target} validation error by {parameter_name}')
-            plt.build()
-            cwd = os.getcwd()
-            plotpath = os.path.join(cwd, 'plots')
-            if not os.path.exists(plotpath):
-                os.mkdir(plotpath)
-            plt.save_fig(f'{plotpath}/{target}.html')
-            plt.clear_figure()
-
-    for t in targets:
-        if t in criteria:
-            optimal_values[t] = {**criteria[t], 
-                                 **optimal_values[t]}
-
-    if return_errors:
-        return optimal_values, min_errors, errors
-    else:
-        return optimal_values
-
-
-
-def prediction_pipeline(pretrained_classifier, n = 100, split = True, timeout = 10, **kwargs):
-
-    text_column = kwargs.get('text_column') or 'text'
-    aggregation = kwargs.get('aggregation')
-    if not getattr(pretrained_classifier, 'discrete'):
-        if not aggregation or aggregation in "absolute sum relative share".split():
-            setattr(pretrained_classifier, 'discrete', True)
-            print()
-            print(f'Classifier set to produce discrete values, given that argument aggregation = "{aggregation}".')
-            print()
-            # TODO: Re-use this to raise an exception in combine_records()
-
-    # Make sure our classifier is using the latest text column for prediction
-    if 'text_column' in kwargs: 
-        setattr(pretrained_classifier, 'text_column', kwargs['text_column']) 
-
-    predict_args = "pre_encoded validation".split()
-    predict_args = { k:v for k,v in kwargs.items() if k in predict_args }
-
-    split_args = "text_column max_sequence_length doc_id_column row_id_column chunk_id_column overlap per_sentence".split()
-    split_args = { k:v for k,v in kwargs.items() if k in split_args }
-
-    combine_args = "text_separator text_column doc_id_column row_id_column chunk_id_column original_data binary_targets aggregation overlap".split()
-    combine_args = { k:v for k,v in kwargs.items() if k in combine_args }
-
-    from types import GeneratorType
-
-    def inner_function(prediction_data):
-        if isinstance(prediction_data, (list, tuple)):
-            prediction_data = iter(prediction_data)
-            prediction_data = prediction_data.__iter__()
-
-        if isinstance(prediction_data, GeneratorType):
-
-            prediction_data = [*prediction_data] # Need to unpack, no way to copy a generator
-            original_data = prediction_data.copy()
-            prediction_data = split_records(prediction_data, **split_args)
-            predicted = pretrained_classifier.predict(prediction_data = prediction_data, **predict_args)
-            if split:
-                predicted = combine_records(predicted, original_data = original_data, binary_targets = pretrained_classifier.targets, **combine_args)
-            yield from predicted
-        else:
-            raise Exception(f'Unknown/incompatible data type: {type(prediction_data)}')
-
-    return inner_function
+        return inner_function
 
 
