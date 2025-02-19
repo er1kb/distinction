@@ -424,14 +424,15 @@ def subdivide(a, b, center = False):
 @dataclass
 class Classifier:
     training_data: list[dict] = field(default_factory = list, repr = False)
-    sentence_transformer: str = 'KBLab/sentence-bert-swedish-cased'
+    # model: str = 'KBLab/sentence-bert-swedish-cased'
+    model: str = 'sentence-transformers/all-MiniLM-L6-v2' 
     text_column: str = 'text'
     targets: list[str] = field(default_factory = list)
     id_columns: list[str] = field(default_factory = list)
     confounders: list[str] = field(default_factory = list)
     ignore: list[str] = field(default_factory = list)
     default_selection: float = 0.01
-    discrete: bool = False
+    # discrete: bool = False
     default_cutoff: float = 0.5
     criteria: dict[dict] = field(default_factory = dict)
     mutually_exclusive: bool = False
@@ -439,7 +440,7 @@ class Classifier:
     n_dims: int = None
     trust_remote_code: bool = False
     show_progress_bar: bool = True
-    use_sample_probability = True
+    use_sample_probability = False
 
     """
     Parameters
@@ -447,8 +448,8 @@ class Classifier:
     training_data :list(dict)
         List of dicts containing a text column (raw text or pre-encoded vector) and one or more binary columns
 
-    sentence_transformer : Optional[str]
-        The sentence_transformer model to be used (copy the name from Huggingface hub)
+    model : Optional[str]
+        The sentence transformer model to be used (copy the name from Huggingface hub)
 
     text_column : str
         Name of the text column
@@ -506,7 +507,7 @@ class Classifier:
         # import torch
         # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         # print('Using device:', device)
-        self.sentence_model = SentenceTransformer(model_name_or_path = self.sentence_transformer,
+        self.sentence_model = SentenceTransformer(model_name_or_path = self.model,
                                                   # device = device,
                                                   trust_remote_code = self.trust_remote_code,
                                                   tokenizer_kwargs = {'clean_up_tokenization_spaces': True}) # this setting gets rid of a warning in Transformers 4.45.1
@@ -631,7 +632,8 @@ class Classifier:
 
     def to_npz(self, filename, compressed = False):
 
-        # self.assemble_filter()
+        if not self.trained:
+            raise Exception('You need to train the model using the .train() method before saving it to disk.')
 
         (np.savez_compressed if compressed else np.savez) \
         (filename,
@@ -770,18 +772,20 @@ class Classifier:
 
 
 
-    def update_predictions(self):
+    def update_predictions(self, discrete):
         self.output_fieldnames = [self.text_column] + self.targets
         other_keys = sorted(list(get_used_keys(self.prediction_data) - set(self.targets)))
         other_data = filter_keys(self.prediction_data, other_keys)
-        predicted_data = dict_to_records(self.predictions if self.discrete else self.similarities)
+        # predicted_data = dict_to_records(self.predictions if self.discrete else self.similarities)
+        predicted_data = dict_to_records(self.predictions if discrete else self.similarities)
         self.output = zip_longest(other_data, predicted_data)
 
 
-    def predict(self, data = None, pre_encoded = False, validation = False):
+    def predict(self, data = None, discrete = True, pre_encoded = False, validation = False):
         if not self.trained:
             raise Exception('You need to train the model (or load a trained model from file) before calling the predict method')
-        if validation and not self.discrete:
+        # if validation and not self.discrete:
+        if validation and not discrete:
             sys.exit('Cannot do validation of continuous data, as there is nothing to compare with. Set discrete = True when validation = True.')
         if data:
             self.prediction_data = [*ones_to_int(data, self.targets)]
@@ -790,12 +794,11 @@ class Classifier:
         if not self.prediction_data:
             raise Exception('Need to provide the classifier with prediction data.')
         self.measure_similarity()
-        # if self.discrete:
         self.binarize()
         if self.mutually_exclusive:
             self.max_category()
         else:
-            self.update_predictions()
+            self.update_predictions(discrete)
         if validation:
             self.validate()
         for a,b in self.output:
@@ -1029,12 +1032,13 @@ class Classifier:
 
 
 
-    def write_csv(self, filename):
+    def write_csv(self, filename, discrete = True):
         if not self.prediction_data:
             sys.exit('No prediction data')
         import csv
         data = {**{self.text_column: [d[self.text_column] for d in self.prediction_data]}, 
-                **(self.predictions if self.discrete else self.similarities)}
+                **(self.predictions if discrete else self.similarities)}
+                # **(self.predictions if self.discrete else self.similarities)}
         data = dict_to_records(data)
         data = [*filter_keys(data, self.output_fieldnames)]
         with open(filename, 'w', newline = '') as csvfile:
@@ -1172,12 +1176,12 @@ class Classifier:
             self.text_column = text_column
 
         aggregation = kwargs.get('aggregation')
-        if not self.discrete:
-            if not aggregation or aggregation in "absolute sum relative share".split():
-                self.discrete = True
-                print()
-                print(f'Classifier set to produce discrete values, given that argument aggregation = "{aggregation}".')
-                print()
+        # if not self.discrete:
+        #     if not aggregation or aggregation in "absolute sum relative share".split():
+        #         self.discrete = True
+        #         print()
+        #         print(f'Classifier set to produce discrete values, given that argument aggregation = "{aggregation}".')
+        #         print()
 
         predict_args = "pre_encoded validation".split()
         predict_args = { k:v for k,v in kwargs.items() if k in predict_args }
