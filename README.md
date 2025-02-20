@@ -1,6 +1,6 @@
 ## Installation
 
-### From Github
+#### From Github
 ```bash
 pip3 install git+https://github.com/er1kb/distinction
 ```
@@ -9,14 +9,14 @@ or clone and install locally:
 git clone https://github.com/er1kb/distinction.git && cd distinction && pip3 install .
 ```
 
-### From PyPI
+#### From PyPI
 ```bash
 python3 -m pip install distinction
 # or if you want to look at the error curves:
 python3 -m pip install distinction[plot]
 ```
 
-### Dependencies
+#### Dependencies
 * [Numpy](https://numpy.org/) >= 1.25.0
 * [SentenceTransformers](https://sbert.net/) >= 3.0.1
 * [Plotext](https://github.com/piccolomo/plotext) >= 5.3.2 (optional)
@@ -38,9 +38,10 @@ This tool has grown out of my work with customer service requests and other text
 
 Some things to consider before diving into the examples: 
 * The quality of your predictions depends on the quality of training and prediction data. Specific categories yield a lot better prediction error than general ones. Use categories that are somewhat coherently expressed and not too broad. For example, _recycling_ and _energy\_consumption_ are more useful in this respect than _sustainability_. The latter is an emergent phenomenon that should be inferred from its subcategories. Our use case may be to identify all texts that are related to _sustainability_, but doing so directly would yield a much higher error rate due to greater variability in the data. 
-* If possible, train and predict at the sentence level, not on entire paragraphs. In the real world, text is rarely homogenous. For example, a review may have sentences that can be considered positive, negative or somewhere in between. Sentences are the best semantic unit, as hinted by the term "sentence transformer". Tools provided [here](#split-and-combine-records) and [here](#set-up-a-prediction-pipeline) allow you to predict sentences and then aggregate the general tendency. 
-* Input data is an iterable (list/generator/tuple) of dicts. Export from your favourite dataset library using polars.DataFrame.[to\_dicts()](https://docs.pola.rs/api/python/stable/reference/dataframe/api/polars.DataFrame.to_dicts.html) or pandas.DataFrame.[to\_dict('records')](https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.to_dict.html).
+* If possible, train and predict at the sentence level, not on entire paragraphs. In the real world, text is rarely homogenous. For example, a review may have sentences that can be considered positive, negative or somewhere in between. Sentences are the best semantic unit, as hinted by the term "sentence transformer". Tools provided [here](#split-and-combine-records) and [here](#set-up-a-prediction-pipeline-for-continuous-data-streams) allow you to predict sentences and then aggregate the general tendency. 
+* Input data is an iterable (list/generator/tuple) of dicts. Export from your favourite dataframe library using polars.DataFrame.[to\_dicts()](https://docs.pola.rs/api/python/stable/reference/dataframe/api/polars.DataFrame.to_dicts.html) or pandas.DataFrame.[to\_dict('records')](https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.to_dict.html).
 * Results are returned as generators where possible to allow for lazy computation (as needed). To get a regular list back, you need to put the generator in a list and [unpack](https://www.geeksforgeeks.org/convert-generator-object-to-list-in-python/) it with an asterisk, eg __predictions = [\*predictions]__. The lazy nature of generators also means that no computation is done until you unpack the generator or call next() on it to yield the first element. 
+
 
 
 ### Set up and use a binary Classifier for independent variables
@@ -123,14 +124,16 @@ Let's try to classify a couple of new texts. This is just using default paramete
 predictions = [*C.predict([{"message": "I really like the taste of these burgers."},
                           {"message": "The staff was really helpful"},
                           {"message": "This is definitely spam"}
-                         ])]
-
+                          ])]
+for p in predictions:
+    print(p)
 ```
 
 These results are ok given the small sample size and lack of optimization, although the first one should have been classified as positive. Notice the third sample is spam and has all other targets set to 0, since _spam_ was declared to be a confounding variable. 
-```python
-[{'message': 'I really like the taste of these burgers.', 'positive': 0, 'service': 0, 'suggestion': 0, 'taste': 1, 'spam': 0}, {'message': 'The staff was really helpful', 'positive': 1, 'service': 1, 'suggestion': 0, 'taste': 0, 'spam': 0}, {'message': 'This is definitely spam', 'positive': 0, 'service': 0, 'suggestion': 0, 'taste': 0, 'spam': 1}]
-
+```bash
+{'message': 'I really like the taste of these burgers.', 'positive': 0, 'service': 0, 'suggestion': 0, 'taste': 1, 'spam': 0}
+{'message': 'The staff was really helpful', 'positive': 1, 'service': 1, 'suggestion': 0, 'taste': 0, 'spam': 0}
+{'message': 'This is definitely spam', 'positive': 0, 'service': 0, 'suggestion': 0, 'taste': 0, 'spam': 1}
 ```
 
 
@@ -264,7 +267,7 @@ Done encoding prediction data
 <details>
 <summary>Expand</summary>
 
-This section can be run with the data and settings from the restaurant reviews example [above](#set-up-and-use-a-binary-classifier-for-independent-variables). Again, we will have to re-use the training data for the purpose of demonstration. The very small sample size means less chance of convergence, meaning the results are somewhat sketchy if not useless. 
+This section can be run with the data and settings from the restaurant reviews example [above](#set-up-and-use-a-binary-classifier-for-independent-variables). Again, we will have to re-use the training data for the purpose of demonstration. The very small sample size means less chance of convergence, meaning the results are somewhat sketchy if not useless. Tuning the model uses repeated validation, which means the prediction data has to contain the right answers. 
 
 Currently, the optimal similarity cutoff is determined to be the sweetspot between type 1 and type 2 errors. Minimizing the overall error works well for most targets, but for rare ones the model will just assign 0 to everything to achieve the best accuracy. The concept of [_imbalanced datasets_](https://discuss.pytorch.org/t/model-predictions-are-all-tensors-full-of-zeros/155381/11) is a known problem even for neural networks. Minimizing the difference between false positive and false negative rates does not yield the absolute minimum error, but it does seem to avoid having the model apply the null hypothesis to everything. It's on my todo list to improve on this, by putting some constraint on the optimization. In the meantime, you can use the plotting function to see whether there is room for improvement or not. 
 
@@ -273,7 +276,8 @@ Currently, the optimal similarity cutoff is determined to be the sweetspot betwe
 <summary>Tune similarity</summary>
 <br>
 
-To find the optimal similarity, just run the __Classifier.tune()__ method with default settings. The simulation will abort for each target when finding the optimal value, if not using plots (explained below), hence you might see the computation speed up towards the end. 
+To find an estimate of the optimal similarity threshold, run the __Classifier.tune()__ method with default settings. The simulation will abort for each target when finding the optimal value, if not using plots (explained below), hence you might see the computation speed up towards the end. 
+
 ```python
 C = Classifier(**kwargs)
 C.train(data)
@@ -393,13 +397,15 @@ predictions = [*C.predict(some_new_data)]
 <details>
 <summary>Expand</summary>
 
+Sentences are units of meaning, so splitting text into sentences will improve our predictions. If there is little punctuation in the text however, you may split by a fixed number of tokens and optionally with some overlap. These use cases are described below. The token splitting uses [regular expressions](https://docs.python.org/3/library/re.html) and word boundaries (\\b).
+
 ```python
 from distinction import Classifier, split_records, combine_records
 
 example_text = [{'text': 'This is the first sentence. Is this the second? Sentence number 3', 'binary_variable': 1},
                 {'text': 'This text is a single sentence.', 'binary_variable': 0}] 
 ```
-Note: in this example we are hard-coding a binary variable, where you would use the classifier for one or more targets. 
+Note: in the code above we are hard-coding a binary variable from the start, where you would otherwise use the classifier for one or more targets once the text has been split. 
 
 <details open>
 <summary>Default settings</summary>
@@ -432,8 +438,8 @@ for result in results:
 Back to the original shape, with a document\_id added. 
 ```bash
 {'doc_id': 0, 'text': 'This is the first sentence. Is this the second? Sentence number 3', 'binary_variable': 1}
-{'doc_id': 1, 'text': 'This text is a single sentence.', 'binary_variable': 0}```
-
+{'doc_id': 1, 'text': 'This text is a single sentence.', 'binary_variable': 0}
+```
 
 </details>
 
@@ -443,9 +449,27 @@ Back to the original shape, with a document\_id added.
 <br>
 
 #### Split
-If needed, you can set a different max number of tokens. Since whitespace and punctuation count as tokens, set max\_sequence\_length to double the number of words you want. This can also be used to produce n-grams. 
+If needed, you can set a different max number of tokens. Since whitespace and punctuation count as tokens, set max\_sequence\_length to double the number of words you want. This can also be used to produce n-grams. The two examples below differ with respect to the argument __per\_sentence__. 
+
+##### Option 1: Fixed number of tokens
 ```python
-sentences = [*split_records(example_text, max_sequence_length = 8)]
+sentences = [*split_records(example_text, per_sentence = False, max_sequence_length = 8)]
+for sentence in sentences:
+    print(sentence)
+```
+
+```bash
+{'text': 'This is the first', 'binary_variable': 1, 'doc_id': 0, 'sentence_id': 0}
+{'text': ' sentence. Is this the', 'binary_variable': 1, 'doc_id': 0, 'sentence_id': 1}
+{'text': ' second? Sentence number 3', 'binary_variable': 1, 'doc_id': 0, 'sentence_id': 2}
+{'text': '', 'binary_variable': 1, 'doc_id': 0, 'sentence_id': 3}
+{'text': 'This text is a', 'binary_variable': 0, 'doc_id': 1, 'sentence_id': 0}
+{'text': ' single sentence.', 'binary_variable': 0, 'doc_id': 1, 'sentence_id': 1}
+```
+
+##### Option 2: Max number of tokens per sentence
+```python
+sentences = [*split_records(example_text, per_sentence = True, max_sequence_length = 8)]
 for sentence in sentences:
     print(sentence)
 ```
@@ -481,7 +505,7 @@ for result in results:
 <br>
 
 #### Split
-An alternative strategy, possibly inferior to splitting by punctuation, is to split text with overlap. The example code below splits the text into chunks of no more than 10 tokens (5 words), with an overlap of 3 tokens (typically 2 words and one whitespace/punctuation). If using the overlap parameter, you must remember to use it when [combining the texts](#combine-records) back together again. 
+An alternative strategy, possibly inferior to splitting by punctuation, is to split text by number of tokens with overlap. The example code below splits the text into chunks of no more than 10 tokens (5 words), with an overlap of 3 tokens (typically 2 words and one whitespace/punctuation). If using the overlap parameter, you must remember to use it when combining the texts back together again (see below). 
 ```python
 sentences = [*split_records(example_text, per_sentence = False, max_sequence_length = 8, overlap = 3)]
 for sentence in sentences:
@@ -513,8 +537,137 @@ for result in results:
 ```
 
 </details>
+
 </details>
 
+
+### Aggregation options for binary targets
+
+<details>
+<summary>Expand</summary>
+<br>
+
+Depending on your use case, you may want to pick up the main tendency of the text or transient themes within it. For example, suggestions might be hidden in a sentence that is part of a longer text, whereas the general sentiment of a text might be better inferred by looking at the entire text. You can control this by how the binary variables are aggregated. 
+Let's start with three examples relating to the restaurant reviews example above. The first text has 1 positive sentence, the second one 2 and in the third one all 3 sentences are predicted to be positive. So which of these texts should we consider positive? 
+
+```python
+
+C = Classifier(**kwargs)
+C.targets = ['positive'] # Let's look at one variable only, for brevity
+C.train(data)
+
+example_texts = [
+    dict(id = 200, message = "Fries are expensive and not that good to be honest. Please do mashed potatoes instead and bigger plates! I am so incredibly happy."),
+    dict(id = 201, message = "The location is great. I love the food. I don't like the staff that much."),
+    dict(id = 202, message = "Food is nice. Staff is nice. Everything is nice.")
+]
+
+split_examples = [*split_records(example_texts, text_column = 'message')]
+predictions = [*C.predict(split_examples, discrete = True)]
+for p in predictions:
+    print(p)
+```
+
+```bash
+{'doc_id': 0, 'id': 200, 'message': 'Fries are expensive and not that good to be honest. ', 'sentence_id': 0, 'positive': 0, 'spam': 0}
+{'doc_id': 0, 'id': 200, 'message': 'Please do mashed potatoes instead and bigger plates! ', 'sentence_id': 1, 'positive': 0, 'spam': 0}
+{'doc_id': 0, 'id': 200, 'message': 'I am so incredibly happy.', 'sentence_id': 2, 'positive': 1, 'spam': 0}
+{'doc_id': 1, 'id': 201, 'message': 'The location is great. ', 'sentence_id': 0, 'positive': 1, 'spam': 0}
+{'doc_id': 1, 'id': 201, 'message': 'I love the food. ', 'sentence_id': 1, 'positive': 1, 'spam': 0}
+{'doc_id': 1, 'id': 201, 'message': "I don't like the staff that much.", 'sentence_id': 2, 'positive': 0, 'spam': 0}
+{'doc_id': 2, 'id': 202, 'message': 'Food is nice. ', 'sentence_id': 0, 'positive': 1, 'spam': 0}
+{'doc_id': 2, 'id': 202, 'message': 'Staff is nice. ', 'sentence_id': 1, 'positive': 1, 'spam': 0}
+{'doc_id': 2, 'id': 202, 'message': 'I love it!', 'sentence_id': 2, 'positive': 1, 'spam': 0}
+```
+
+Note that __split\_records()__ changes the original data in place, in this case _example\_texts_ (printed again below). The __doc\_id__ key is added to each record, to be able to use this data later on when combining the split records back together. It's not strictly necessary to use the _original\_data_ argument of __combine\_records()__ below, it's just slightly better in terms of computational performance. 
+```bash
+{'id': 200, 'message': 'Fries are expensive and not that good to be honest. Please do mashed potatoes instead and bigger plates! I am so incredibly happy.', 'doc_id': 0}
+{'id': 201, 'message': "The location is great. I love the food. I don't like the staff that much.", 'doc_id': 1}
+{'id': 202, 'message': 'Food is nice. Staff is nice. I love it!', 'doc_id': 2}
+```
+
+
+##### Aggregation "any" (default)
+```python
+results = [*combine_records(predictions, 
+                            text_column = 'message', 
+                            binary_targets = C.targets, 
+                            original_data = example_texts, 
+                            aggregation = 'any')]
+for result in results:
+    print(result)
+```
+
+This is the default aggregation strategy, which sets the bar quite low. The first text should not be considered positive. We don't know why the person is happy, although we can assume it has nothing to do with the food. Consider the fact that sometimes people will express irony as well. 
+```bash
+{'doc_id': 0, 'message': 'Fries are expensive and not that good to be honest. Please do mashed potatoes instead and bigger plates! I am so incredibly happy.', 'positive': 1, 'spam': 0, 'id': 200}
+{'doc_id': 1, 'message': "The location is great. I love the food. I don't like the staff that much.", 'positive': 1, 'spam': 0, 'id': 201}
+{'doc_id': 2, 'message': 'Food is nice. Staff is nice. I love it!', 'positive': 1, 'spam': 0, 'id': 202}
+```
+
+
+##### Aggregation "most" / "majority"
+```python
+results = [*combine_records(predictions, text_column = 'message', 
+                            binary_targets = C.targets, 
+                            original_data = example_texts, 
+                            aggregation = 'most')]
+for result in results:
+    print(result)
+```
+
+Looking at the majority of sentences, text 2 and 3 becomes positive. 
+```bash
+{'doc_id': 0, 'message': 'Fries are expensive and not that good to be honest. Please do mashed potatoes instead and bigger plates! I am so incredibly happy.', 'positive': 0, 'spam': 0, 'id': 200}
+{'doc_id': 1, 'message': "The location is great. I love the food. I don't like the staff that much.", 'positive': 1, 'spam': 0, 'id': 201}
+{'doc_id': 2, 'message': 'Food is nice. Staff is nice. I love it!', 'positive': 1, 'spam': 0, 'id': 202}
+```
+
+##### Aggregation "all"
+```python
+results = [*combine_records(predictions, 
+                            text_column = 'message', 
+                            binary_targets = C.targets, 
+                            original_data = example_texts, 
+                            aggregation = 'all')]
+for result in results:
+    print(result)
+```
+With the constraint that all sentences have to be 1, only the third text becomes positive. 
+```bash
+{'doc_id': 0, 'message': 'Fries are expensive and not that good to be honest. Please do mashed potatoes instead and bigger plates! I am so incredibly happy.', 'positive': 0, 'spam': 0, 'id': 200}
+{'doc_id': 1, 'message': "The location is great. I love the food. I don't like the staff that much.", 'positive': 0, 'spam': 0, 'id': 201}
+{'doc_id': 2, 'message': 'Food is nice. Staff is nice. I love it!', 'positive': 1, 'spam': 0, 'id': 202}
+```
+
+
+##### Aggregation "relative" / "share"
+```python
+results = [*combine_records(predictions, 
+                            text_column = 'message', 
+                            binary_targets = C.targets, 
+                            original_data = example_texts, 
+                            aggregation = 'relative')]
+for result in results:
+    print(result)
+
+```
+
+After concatenation, the texts are found to be 1/3, 2/3 and 100% positive. 
+```bash
+{'doc_id': 0, 'message': 'Fries are expensive and not that good to be honest. Please do mashed potatoes instead and bigger plates! I am so incredibly happy.', 'positive': 0.3333333333333333, 'spam': 0.0, 'id': 200}
+{'doc_id': 1, 'message': "The location is great. I love the food. I don't like the staff that much.", 'positive': 0.6666666666666666, 'spam': 0.0, 'id': 201}
+{'doc_id': 2, 'message': 'Food is nice. Staff is nice. I love it!', 'positive': 1.0, 'spam': 0.0, 'id': 202}
+```
+
+##### Aggregation "mutually\_exclusive"
+
+Use this when working with mutually exclusive data. The most common prediction wins. If more than one target is the most common, the score becomes a tiebreaker. 
+The actual code is shown as part of the section on [classifying mutually exclusive data](#set-up-and-use-a-Classifier-for-mutually-exclusive-binary-variables) below. 
+
+
+</details>
 
 
 ### Set up a prediction pipeline for continuous data streams
@@ -522,7 +675,7 @@ for result in results:
 <details>
 <summary>Expand</summary>
 
-When your model is finalized, you can turn it into a simpler prediction function using the _Classifier.to_pipeline()_ method. Provide it with the same keyword arguments as you used to initiate the Classifier. This code continues the restaurant reviews example above. 
+When your model is finalized, you can turn it into a simpler prediction function using the _Classifier.to_pipeline()_ method. Provide it with the same keyword arguments used to initiate the Classifier before. This code continues from the restaurant reviews example above. 
 ```python
 kwargs = {
     'targets': 'positive suggestion taste service'.split(),
@@ -563,7 +716,7 @@ Done encoding prediction data
 <details>
 <summary>Expand</summary>
 
-The following two examples use external datasets from [Kaggle](https://www.kaggle.com/datasets/). The Classifier is used in the same way as in the previous sections, except that we add the argument __mutually\_exclusive = True__. This means only one of the targets can be true (1) and all others are false (0). 
+The following two examples use external datasets from [Kaggle](https://www.kaggle.com/datasets/). The Classifier is used in the same way as in the previous sections, except we add the argument __mutually\_exclusive = True__. This means only one of the targets can be true (1) and all others are false (0). 
 
 There are no similarity thresholds for this kind of model, as the category with the max similarity is chosen (irrespective of whether these categories are equally well defined). As of this writing, there is also no tuning of "selection", ie how large percentage of the features to use. You will have to experiment. A reasonable assumption is that you will need a larger selection the more targets there are to choose from and the more general these decisions are. For the two analyses below, I settled on 0.5 and 0.65 respectively after some trial-and-error, which is substantially higher than what seems to work best for independent variables (as above). For some analyses, you might even set _default\_selection = 1_ meaning all the features are used, if that turns out to yield the lowest error. 
 
