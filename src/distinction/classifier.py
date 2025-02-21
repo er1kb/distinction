@@ -516,10 +516,6 @@ class Classifier:
         for property in 'trained training_data prediction_data'.split():
             self.__dict__[property] = None
 
-        # Dereference list arguments, as these are modified by the tune() function
-        self.targets = self.targets.copy()
-        self.confounders = self.confounders.copy()
-
 
     # TRAINING
 
@@ -537,6 +533,13 @@ class Classifier:
             self.targets = sorted(list(set(get_used_keys(self.training_data)) - set([self.text_column] + self.confounders + self.id_columns + self.ignore)))
         # Put confounders last
         self.targets = sorted(list(set(self.targets))) + sorted(list(set(self.confounders)))
+
+        print('Targets:')
+        print(self.targets)
+        print()
+        print('Confounders:')
+        print(self.confounders)
+
         for t in self.targets:
             self.training_indices[t] = [i for i,v in enumerate(self.training_data) if t in v and int(v[t]) == 1]
         # self.use_sample_probability = any([self.prob_key in x and not x[self.prob_key] for x in self.criteria.values()])
@@ -545,6 +548,8 @@ class Classifier:
                 sys.exit('Cannot predict using sample probabilities when the number of training samples is less than 100, meaning each percent corresponds to more than one sample. If you want your predictions to follow the same distribution as the training data (which should only be considered for large and unnaturally predictable data streams), add more training data. If not, remove all instances of { "probability": None } in your "criteria" or specify an exact number between 0 and 1. \nExited.')
             print('***~~~ CALCULATING SAMPLE PROBABILITIES ~~~***')
             self.sample_probabilities = { k:round(len(v) / self.training_nrows, self.n_decimals) for k,v in self.training_indices.items() }
+        else:
+            self.sample_probabilities = { k: None for k,v in self.training_indices.items() }
 
         # If any confounders are present, get those indices
         self.confounder_indices = {i for i,v in enumerate(self.training_data) for c in self.confounders if c in v and int(v[c]) == 1} if len(self.confounders) > 0 else set()
@@ -656,8 +661,8 @@ class Classifier:
         for property in 'targets confounders'.split():
             self.__dict__[property] = a[property].tolist() # Convert from numpy string array
 
-        for property in 'sample_probabilities'.split():
-            self.__dict__[property] = a[property]
+        # for property in 'sample_probabilities'.split():
+        #     self.__dict__[property] = a[property]
 
         for property in 'central_tendency filter combined_rank'.split():
             self.__dict__[property] = matrix_to_dict(a[property], self.targets)

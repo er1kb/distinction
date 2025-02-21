@@ -1,3 +1,4 @@
+
 ## Installation
 
 #### From Github
@@ -36,7 +37,7 @@ This tool has grown out of my work with customer service requests and other text
 
 ## How-to / Examples
 
-Some things to consider before diving into the examples: 
+Some things to consider before (or after) diving into the examples: 
 * The quality of your predictions depends on the quality of training and prediction data. Specific categories yield a lot better prediction error than general ones. Use categories that are somewhat coherently expressed and not too broad. For example, _recycling_ and _energy\_consumption_ are more useful in this respect than _sustainability_. The latter is an emergent phenomenon that should be inferred from its subcategories. Our use case may be to identify all texts that are related to _sustainability_, but doing so directly would yield a much higher error rate due to greater variability in the data. 
 * If possible, train and predict at the sentence level, not on entire paragraphs. In the real world, text is rarely homogenous. For example, a review may have sentences that can be considered positive, negative or somewhere in between. Sentences are the best semantic unit, as hinted by the term "sentence transformer". Tools provided [here](#split-and-combine-records) and [here](#set-up-a-prediction-pipeline-for-continuous-data-streams) allow you to predict sentences and then aggregate the general tendency. 
 * Input data is an iterable (list/generator/tuple) of dicts. Export from your favourite dataframe library using polars.DataFrame.[to\_dicts()](https://docs.pola.rs/api/python/stable/reference/dataframe/api/polars.DataFrame.to_dicts.html) or pandas.DataFrame.[to\_dict('records')](https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.to_dict.html).
@@ -95,6 +96,9 @@ Counts of targets in the training data:
 
 First step is to define the classifier. Using a dict for keyword arguments means the arguments are reusable. We tell the classifier which columns are binary variables (targets). A confounder is a special kind of target, as it cannot be anything else. In this example, we don't want spam messages to taint our customer service statistics. 
 The train() method below calls the sentence transformer to encode the texts, then calculates the centroids of each target and finally ranks the features (embedding dimensions) by relevance. 
+<br><br>
+If your text is not in English, remember to use another __model__ from the [Huggingface model hub](https://huggingface.co/models?pipeline_tag=sentence-similarity&sort=downloads) that speaks your language. There are language-specific and multilingual ones to choose from. A model that doesn't understand your language will still produce results, although they won't make much sense. 
+
 ```python
 
 kwargs = {
@@ -284,6 +288,7 @@ C.train(data)
 C.tune(data) # Tuning similarity within the default range of 0.01 - 1 in 0.01 increments, until optimal values are found
 
 ```
+
 </details>
 
 <details>
@@ -291,6 +296,7 @@ C.tune(data) # Tuning similarity within the default range of 0.01 - 1 in 0.01 in
 <br>
 
 Add the argument __param\_name = 'selection'__ to the __Classifier.tune()__ method. To speed up the process, reduce the range with __param\_range = (start, stop, step)__. In this example, experience tells me the optimal value is somewhere in the range of 0.01 - 0.2 and so we don't have to spend time looking beyond that. You estimate one parameter at a time, hence the two separate calls to __tune()__. Only the first call needs to provide data to the Classifier. 
+
 ```python
 C = Classifier(**kwargs)
 C.train(data)
@@ -302,6 +308,7 @@ C.tune(param_name = 'selection', param_range = (0.01, 0.2, 0.01)) # Tuning selec
 <details>
 <summary>Tune with plots</summary>
 <br>
+
 To plot the error curve, set __plot = True__. This requires external library [Plotext](https://github.com/piccolomo/plotext). Plots will be written to individual .html files in the _plots_ subfolder under your working directory. When plotting, the simulation will not end prematurely as it has to run through the entire range. You can still work in a reduced range with __param\_range__. 
 
 ```python
@@ -322,6 +329,7 @@ C.tune(data) # Tuning similarity within the default range of 0.01 - 1 in 0.01 in
 C.tune(param_name = 'selection', param_range = (0.01, 0.2, 0.01)) # Tuning selection within a reduced range, re-uses data from the previous call
 print(C.criteria)
 ```
+
 This is the output. Again, only for the purpose of demonstration as it does not converge given the small sample size. 
 ```python
 {'positive': {'similarity': 0.14, 'selection': 0.01}, 'service': {'similarity': 0.01, 'selection': 0.01}, 'suggestion': {'similarity': 0.37, 'selection': 0.04}, 'taste': {'similarity': 0.8, 'selection': 0.01}, 'spam': {'similarity': 1.0, 'selection': 0.01}}
@@ -372,7 +380,7 @@ Classifier(model='sentence-transformers/all-MiniLM-L6-v2', text_column='text', t
 <details>
 <summary>Expand</summary>
 
-Saved models are typically a few kilobytes on disk. 
+Saved models are typically a few kilobytes on disk. At the time of writing, only the training stage is saved. If you tune the model, the resulting __criteria__ will have to be stored elsewhere, eg in your python code. 
 
 Saving:
 
@@ -548,7 +556,7 @@ for result in results:
 <br>
 
 Depending on your use case, you may want to pick up the main tendency of the text or transient themes within it. For example, suggestions might be hidden in a sentence that is part of a longer text, whereas the general sentiment of a text might be better inferred by looking at the entire text. You can control this by how the binary variables are aggregated. 
-Let's start with three examples relating to the restaurant reviews example above. The first text has 1 positive sentence, the second one 2 and in the third one all 3 sentences are predicted to be positive. So which of these texts should we consider positive? 
+Let's start with three examples relating to the restaurant reviews example above. The first text has 1 positive sentence, the second one has 2 and in the third one all 3 sentences are predicted to be positive. So which of these texts should we consider positive? 
 
 ```python
 
@@ -559,7 +567,7 @@ C.train(data)
 example_texts = [
     dict(id = 200, message = "Fries are expensive and not that good to be honest. Please do mashed potatoes instead and bigger plates! I am so incredibly happy."),
     dict(id = 201, message = "The location is great. I love the food. I don't like the staff that much."),
-    dict(id = 202, message = "Food is nice. Staff is nice. Everything is nice.")
+    dict(id = 202, message = "Food is nice. Staff is nice. I love it!")
 ]
 
 split_examples = [*split_records(example_texts, text_column = 'message')]
@@ -617,7 +625,7 @@ for result in results:
     print(result)
 ```
 
-Looking at the majority of sentences, text 2 and 3 becomes positive. 
+Looking at the majority of sentences, texts 2 and 3 become positive. 
 ```bash
 {'doc_id': 0, 'message': 'Fries are expensive and not that good to be honest. Please do mashed potatoes instead and bigger plates! I am so incredibly happy.', 'positive': 0, 'spam': 0, 'id': 200}
 {'doc_id': 1, 'message': "The location is great. I love the food. I don't like the staff that much.", 'positive': 1, 'spam': 0, 'id': 201}
@@ -663,7 +671,7 @@ After concatenation, the texts are found to be 1/3, 2/3 and 100% positive.
 
 ##### Aggregation "mutually\_exclusive"
 
-Use this when working with mutually exclusive data. The most common prediction wins. If more than one target is the most common, the score becomes a tiebreaker. 
+Use this when working with mutually exclusive data. The most common prediction wins. When two or more targets are equally common, the score becomes a tiebreaker. 
 The actual code is shown as part of the section on [classifying mutually exclusive data](#set-up-and-use-a-Classifier-for-mutually-exclusive-binary-variables) below. 
 
 
@@ -675,7 +683,7 @@ The actual code is shown as part of the section on [classifying mutually exclusi
 <details>
 <summary>Expand</summary>
 
-When your model is finalized, you can turn it into a simpler prediction function using the _Classifier.to_pipeline()_ method. Provide it with the same keyword arguments used to initiate the Classifier before. This code continues from the restaurant reviews example above. 
+When your model is finalized, you can turn it into an end-to-end prediction function using the _Classifier.to_pipeline()_ method. Provide it with the same keyword arguments used to initiate the Classifier before. The pipeline provides a convenient way to split the text, predict at the sentence level, and then combine the records together again. This code continues from the restaurant reviews example above. 
 ```python
 kwargs = {
     'targets': 'positive suggestion taste service'.split(),
@@ -691,21 +699,19 @@ C = Classifier(**kwargs)
 C.train(data)
 pipeline = C.to_pipeline(**kwargs) # Use the same settings as for the original classifier
 
-new_data = [{"message": "I really like the taste of these burgers."},
+new_data = [{"message": "I really love the taste of these burgers. This place is great."},
             {"message": "The staff was really helpful"},
-            {"message": "This is definitely spam"}]
+            {"message": "This is definitely spam, even though I mention that the burgers taste good and the staff are helpful."}]
 
-results = pipeline(new_data)
-print(next(results)) # Print the first prediction
+results = pipeline(new_data) # Returns a generator by default
+for result in results:
+    print(result)
 ```
 
 ```bash
-❯ python3 to_pipeline.py
-Done encoding training data
-
-Done encoding prediction data
-
-{'doc_id': 0, 'message': 'I really like the taste of these burgers.', 'positive': 0, 'service': 0, 'suggestion': 0, 'taste': 1, 'spam': 0}
+{'doc_id': 0, 'message': 'I really love the taste of these burgers. This place is great.', 'positive': 1, 'service': 0, 'suggestion': 0, 'taste': 1, 'spam': 0}
+{'doc_id': 1, 'message': 'The staff was really helpful', 'positive': 1, 'service': 1, 'suggestion': 0, 'taste': 0, 'spam': 0}
+{'doc_id': 2, 'message': 'This is definitely spam, even though I mention that the burgers taste good and the staff are helpful.', 'positive': 0, 'service': 0, 'suggestion': 0, 'taste': 0, 'spam': 1}
 ```
 
 </details>
@@ -839,7 +845,7 @@ Overall accuracy:
 
 real	0m7,069s
 user	0m8,649s
-sys	    0m3,801s
+sys		0m3,801s
 ```
 
 </details>
@@ -987,7 +993,7 @@ Overall accuracy:
 
 real	0m6,752s
 user	0m6,727s
-sys	    0m3,597s
+sys		0m3,597s
 
 ```
 
