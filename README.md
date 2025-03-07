@@ -726,7 +726,8 @@ for result in results:
 {'doc_id': 1, 'message': 'The staff was really helpful', 'positive': 1, 'service': 1, 'suggestion': 0, 'taste': 0, 'spam': 0}
 {'doc_id': 2, 'message': 'This is definitely spam, even though I mention that the burgers taste good and the staff are helpful.', 'positive': 0, 'service': 0, 'suggestion': 0, 'taste': 0, 'spam': 1}
 ```
-<details>
+
+</details>
 
 
 <details>
@@ -781,7 +782,7 @@ for p in predictions:
 {'id': 103, 'positive': 0, 'service': 0, 'suggestion': 0, 'taste': 0, 'spam': 1}
 ```
 
-<details>
+</details>
 
 
 <details>
@@ -835,7 +836,7 @@ for p in predictions:
 ```
 
 
-<details>
+</details>
 
 
 <details>
@@ -893,7 +894,7 @@ for p in predictions:
 
 
 
-<details>
+</details>
 
 
 
