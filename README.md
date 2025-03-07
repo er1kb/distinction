@@ -216,9 +216,10 @@ spam                0.0                 0.0                 0.0                 
 <summary>Expand</summary>
 <br>
 
-Although sentence transformers are fast compared to other neural networks, the encoding of text is the most time consuming part of the Classifier model and especially for large datasets. For the training stage, you can get around this by using a smaller sample. Another obvious way to save time and computation is if you have pre-existing embeddings in a vector database, such as [Elasticsearch](https://www.elastic.co/). You can then skip the encoding altogether by calling _train()_ and/or _predict()_ with the argument _pre\_encoded = True_. Ideally, you should never have to encode text more than once in a data pipeline. 
+Although sentence transformers are fast compared to other neural networks, the encoding of text is the most time consuming part of the Classifier model and especially for large datasets. For the training stage, you can get around this by using a smaller sample. Another obvious way to save time and computation is if you have pre-existing embeddings in a vector database, such as [Elasticsearch](https://www.elastic.co/). You can then skip the encoding altogether by calling _train()_ and/or _predict()_ with the argument _pre\_encoded = True_. Ideally, you should never have to encode text more than once in a data pipeline. When using existing vectors, you need to specify _vector\_column_ instead of _text\_column_. These two sources are kept separate to allow for use cases where both raw text and embeddings are processed.  
 
-In the following example, we encode the training data outside of the Classifier, but then we go back to using raw text from the prediction data. This code uses an optional [pytorch](https://github.com/pytorch/pytorch) check to run the sentence transformer on the GPU. 
+In the following example, we encode the training data outside of the Classifier, but then we go back to using raw text from the prediction data. For raw text, use the _text\_column_ argument (if omitted, the default value being "text"). For vectors, use __either__ the _text\_column_ or the optional _vector\_column_ argument. The reason these two arguments exist side by side is you might want to predict using vectors while at the same time concatenating text - more on this in the section on pipelines. 
+The code below uses an optional [pytorch](https://github.com/pytorch/pytorch) check to run the sentence transformer on the GPU. 
 
 ```python
 from distinction import Classifier
@@ -241,11 +242,11 @@ for i,_ in enumerate(training_data):
     training_data[i]['vector'] = vectors[i] # Merge sentence embeddings into the original data
 
 
-C = Classifier(text_column = 'vector', ignore = ['text'], show_progress_bar = False) # Set to read encoded "text" from the "vector" column
-C.train(training_data, pre_encoded = True)
+C = Classifier(text_column = 'vector', show_progress_bar = False) # Set to read encoded "text" for prediction. Optionally use vector_column = 'vector' instead, if you want to. 
+C.train(training_data, pre_encoded = True) # Tell the classifier that the text column is an embedding
 
 # Let's assume the prediction data is supplied as raw text
-C.text_column = 'text' # Set to read proper text from the "text" column
+C.text_column = 'text' # Set to read proper text from the "text" column, as we predict with pre_encoded = False on the next line
 results = C.predict([dict(text = 'I am Cornholio!')], pre_encoded = False)
 print(next(results))
 ```
@@ -421,6 +422,8 @@ Note: in the code above we are hard-coding a binary variable from the start, whe
 
 #### Split
 By default, texts are split into sentences and then split into chunks when the sentence exceeds 384 tokens (the maximum for current sentence transformer models). The chunks are numbered by chunk\_id, with the last one being -1. These default settings should be used for semantic classifier pipelines, although a couple of other parameters are available to tamper with. 
+
+__Note__: _split()_ assumes your data is not pre-encoded vectors. You cannot split an embedding the way you would split raw text. By the same token, _combine()_ automatically drops the vector column. 
 
 ```python
 sentences = [*split_records(example_text)]
@@ -684,6 +687,16 @@ The actual code is shown as part of the section on [classifying mutually exclusi
 <summary>Expand</summary>
 
 When your model is finalized, you can turn it into an end-to-end prediction function using the _Classifier.to_pipeline()_ method. Provide it with the same keyword arguments used to initiate the Classifier before. The pipeline provides a convenient way to split the text, predict at the sentence level, and then combine the records together again. This code continues from the restaurant reviews example above. 
+
+There are three use cases to consider, with respect to the __pre\_encoded__ argument. 
+
+1. A raw text column is used for prediction. The text is split by sentence and then glued back together again. The original document level data is available to join in when combining the records after prediction. 
+2. Pre-encoded vectors are used for prediction. These cannot be split into sentences or chunks like the raw text. It's assumed that these vectors are encoded at the sentence level, meaning they will be combined into coherent texts (using a _doc\_id\_column_ as key) after prediction. If not, set _combine = False_. Vectors are dropped from the output.
+3. As #2, except there is also raw text to be combined. Remember the _text\_column_ is dual use: it can point to raw text or a pre-encoded vector. For this edge case, use _pre\_encoded = True_ and the extra argument _raw\_text\_column_. The vector, specified in _text\_column_ will be used for prediction. The raw text column will be glued together, assuming there are id columns in the data. 
+
+<details>
+<summary>Case 1: raw text as input</summary>
+
 ```python
 kwargs = {
     'targets': 'positive suggestion taste service'.split(),
@@ -713,6 +726,176 @@ for result in results:
 {'doc_id': 1, 'message': 'The staff was really helpful', 'positive': 1, 'service': 1, 'suggestion': 0, 'taste': 0, 'spam': 0}
 {'doc_id': 2, 'message': 'This is definitely spam, even though I mention that the burgers taste good and the staff are helpful.', 'positive': 0, 'service': 0, 'suggestion': 0, 'taste': 0, 'spam': 1}
 ```
+<details>
+
+
+<details>
+<summary>Case 2: embeddings as input</summary>
+
+Below we use embeddings for both training and prediction. 
+
+```python
+kwargs = {
+    'targets': 'positive suggestion taste service'.split(),
+    'confounders': ['spam'],
+    'id_columns': ['id'],
+    'text_column': 'embedding',
+    'default_selection': 0.05
+}
+
+model = SentenceTransformer(model_name_or_path = 'sentence-transformers/all-MiniLM-L6-v2',
+                            tokenizer_kwargs = {'clean_up_tokenization_spaces': True})
+
+vectors = model.encode([r['message'] or '' for r in data], show_progress_bar = False)
+
+for i,_ in enumerate(data):
+    data[i]['embedding'] = vectors[i] # Put embedding into data
+    data[i].pop('message') # Remove original text
+
+C = Classifier(**kwargs)
+C.train(data, pre_encoded = True)
+
+
+kwargs.update(dict(pre_encoded = True, doc_id_column = 'id', split = False, combine = True)) 
+# pre_encoded is an argument for .to_pipeline() but not to Classifier
+pipeline = C.to_pipeline(**kwargs)
+
+
+new_data = [{"id": 101, "message": "I really love the taste of these burgers. This place is great."},
+            {"id": 102, "message": "The staff was really helpful"},
+            {"id": 103, "message": "This is definitely spam, even though I mention that the burgers taste good and the staff are helpful."}]
+
+new_vectors = model.encode([r['message'] or '' for r in new_data], show_progress_bar = False)
+for i,_ in enumerate(new_data):
+    new_data[i]['embedding'] = new_vectors[i]
+    new_data[i].pop('message')
+
+predictions = pipeline(new_data) # Returns a generator by default
+for p in predictions:
+    print(p)
+```
+
+```bash
+{'id': 101, 'positive': 0, 'service': 0, 'suggestion': 0, 'taste': 1, 'spam': 0}
+{'id': 102, 'positive': 1, 'service': 1, 'suggestion': 0, 'taste': 0, 'spam': 0}
+{'id': 103, 'positive': 0, 'service': 0, 'suggestion': 0, 'taste': 0, 'spam': 1}
+```
+
+<details>
+
+
+<details>
+<summary>Case 3: embeddings as input, raw text as output</summary>
+
+This is very similar to the previous example, except we specify a _text\_column_ for the raw text and put the vector in the _vector\_column_ argument. The vector will be dropped (unless _keep\_vector = True_) and the actual text will be concatenated. 
+
+```python
+kwargs = {
+    'targets': 'positive suggestion taste service'.split(),
+    'confounders': ['spam'],
+    'id_columns': ['id'],
+    'text_column': 'message',
+    'vector_column': 'embedding',
+    'default_selection': 0.05
+}
+
+model = SentenceTransformer(model_name_or_path = 'sentence-transformers/all-MiniLM-L6-v2',
+                            tokenizer_kwargs = {'clean_up_tokenization_spaces': True})
+
+vectors = model.encode([r['message'] or '' for r in data], show_progress_bar = False)
+
+for i,_ in enumerate(data):
+    data[i]['embedding'] = vectors[i]
+
+C = Classifier(**kwargs)
+C.train(data, pre_encoded = True)
+
+
+kwargs.update(dict(pre_encoded = True, doc_id_column = 'id', split = False, combine = True)) # pre_encoded is an argument for .to_pipeline() but not to Classifier
+pipeline = C.to_pipeline(**kwargs)
+
+
+new_data = [{"id": 101, "message": "I really love the taste of these burgers. This place is great."},
+            {"id": 102, "message": "The staff was really helpful"},
+            {"id": 103, "message": "This is definitely spam, even though I mention that the burgers taste good and the staff are helpful."}]
+
+new_vectors = model.encode([r['message'] or '' for r in new_data], show_progress_bar = False)
+for i,_ in enumerate(new_data):
+    new_data[i]['embedding'] = new_vectors[i]
+
+predictions = pipeline(new_data) # Returns a generator by default
+for p in predictions:
+    print(p)
+```
+
+```bash
+{'id': 101, 'message': 'I really love the taste of these burgers. This place is great.', 'positive': 0, 'service': 0, 'suggestion': 0, 'taste': 1, 'spam': 0}
+{'id': 102, 'message': 'The staff was really helpful', 'positive': 1, 'service': 1, 'suggestion': 0, 'taste': 0, 'spam': 0}
+{'id': 103, 'message': 'This is definitely spam, even though I mention that the burgers taste good and the staff are helpful.', 'positive': 0, 'service': 0, 'suggestion': 0, 'taste': 0, 'spam': 1}
+```
+
+
+<details>
+
+
+<details>
+<summary>Chaining pipelines</summary>
+
+You can use one pipeline after another. Preferrably use the argument _keep\_vector = True_ to avoid the time-consuming step of encoding the text between the pipelines. Only the last pipeline should have _keep\_vector = False_ and _combine = True_ if prediction was done at the sentence level. If both of these arguments are True an exception is raised, as embeddings cannot be concatenated in a meaningful way. 
+
+The example below consists of two separate pipelines. The first one categorizes a document as suggestion and/or taste if __any__ of the constituent sentences are predicted as such. Suggestions might be part of a longer text and not necessarily the main message. The second pipeline looks at the main tendency of the text, where __most__ of the sentences have to be positive or about service for these categories to be applied to the entire document. As the second text consists of one sentence, predictions are the same at the sentence and document levels.
+
+The call to _pipeline\_chain([pipeline1, pipeline2], new\_data)_ is equal to _predictions = pipeline2(pipeline1(new\_data))_ except it's obviously more scalable. 
+
+```python
+
+from distinction import Classifier, count_used_keys, ones_to_int, pipeline_chain
+
+# Omitted code from previous examples
+
+kwargs = {
+    'targets': 'positive suggestion taste service'.split(),
+    'confounders': ['spam'],
+    'id_columns': ['id'],
+    'text_column': 'message',
+    'vector_column': 'embedding',
+    'default_selection': 0.05
+}
+
+C = Classifier(**kwargs)
+C.train(data, pre_encoded = False)
+
+kwargs.update(dict(keep_vector = True, targets = "suggestion taste".split(), aggregation = 'any', doc_id_column = 'id', split = True, combine = False)) 
+# keep_vector makes sure we only need to encode the raw text once (time consuming)
+# Split the text into sentences, but do not combine before applying the second pipeline
+pipeline1 = C.to_pipeline(**kwargs)
+
+kwargs.update(dict(pre_encoded = True, keep_vector = False, targets = "positive service".split(), aggregation = 'most', doc_id_column = 'id', split = False, combine = True))
+# Combine sentences into the original documents, since this is the last prediction step
+pipeline2 = C.to_pipeline(**kwargs)
+
+new_data = [{"id": 101, "message": "I really love the taste of these burgers. This place is great."},
+            {"id": 102, "message": "The staff was really helpful"},
+            {"id": 103, "message": "This is definitely spam, even though I mention that the burgers taste good and the staff are helpful."}]
+
+predictions = pipeline_chain([pipeline1, pipeline2], new_data)
+
+for p in predictions:
+    print(p)
+
+```
+
+```bash
+{'id': 0, 'message': 'I really love the taste of these burgers. This place is great.', 'positive': 1, 'service': 0, 'suggestion': 0, 'taste': 1, 'spam': 0}
+{'id': 1, 'message': 'The staff was really helpful', 'positive': 1, 'service': 1, 'suggestion': 0, 'taste': 0, 'spam': 0}
+{'id': 2, 'message': 'This is definitely spam, even though I mention that the burgers taste good and the staff are helpful.', 'positive': 0, 'service': 0, 'suggestion': 0, 'taste': 0, 'spam': 1}
+```
+
+
+
+<details>
+
+
 
 </details>
 

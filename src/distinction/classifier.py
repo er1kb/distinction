@@ -63,11 +63,12 @@ def split_records(records, text_column = 'text', max_sequence_length = 384, doc_
         k += 1
 
 
-def combine_two_records(binary_targets, text_separator, text_column, doc_id_column, row_id_column, chunk_id_column, overlap, original_data, mutually_exclusive, a = None, b = None):
+def combine_two_records(binary_targets, text_separator, text_column, doc_id_column, row_id_column, chunk_id_column, overlap, original_data, mutually_exclusive, drop, a = None, b = None):
     """ Merge dicts belonging to the same document, as indicated by the doc_id_column """
     from collections.abc import Sequence
 
-    binary_targets = binary_targets or [] # Cannot iterate over None or turn it into a set
+    drop = set(drop)
+
     doc_ids = set([a[doc_id_column], b[doc_id_column]])
     if len(doc_ids) > 1:
         raise Exception("Cannot merge two documents with different doc ids.")
@@ -75,31 +76,39 @@ def combine_two_records(binary_targets, text_separator, text_column, doc_id_colu
     common_keys = { text_column, doc_id_column }
     # Where available, use values from the original fulltext record
     if original_data:
-        original_keys = set(original_data[a[doc_id_column]].keys()).union(set(original_data[a[doc_id_column]].keys())) - common_keys - set(binary_targets)
+        original_keys = set(original_data[a[doc_id_column]].keys()).union(set(original_data[a[doc_id_column]].keys())) - common_keys - set(binary_targets) - drop
     else:
         original_keys = set()
 
-    remaining_keys = set(a.keys()).union(set(b.keys())) - common_keys - set(binary_targets) - original_keys
+    remaining_keys = set(a.keys()).union(set(b.keys())) - common_keys - set(binary_targets) - original_keys - drop
 
     if row_id_column:
         remaining_keys = remaining_keys - { row_id_column }
     if chunk_id_column:
         remaining_keys = remaining_keys - { chunk_id_column }
 
-    # If the second text is an empty string, ignore overlap as it might be the last text of the document
-    if len(b[text_column]) == 0:
-        overlap = 0
+    if text_column:
+        # If the second text is an empty string, ignore overlap as it might be the last text of the document
+        # if len(b[text_column]) == 0:
+        if len(b.get(text_column)) == 0:
+            overlap = 0
 
-    if (overlap == 0):
-        a_text = a[text_column]
-    else:
-        tokens = re.split(pattern = r'\b', string = a[text_column])
-        if (chunk_id_column in b and b[chunk_id_column] < 0):
-            a_text = ''.join(tokens[:-overlap - 1])
+        if (overlap == 0):
+            # a_text = a[text_column]
+            a_text = a.get(text_column)
         else:
-            a_text =  ''.join(tokens)
-    record = { doc_id_column: a[doc_id_column],
-               text_column: text_separator.join([a_text, b[text_column]]) }
+            # tokens = re.split(pattern = r'\b', string = a[text_column])
+            tokens = re.split(pattern = r'\b', string = a.get(text_column))
+            if (chunk_id_column in b and b[chunk_id_column] < 0):
+                a_text = ''.join(tokens[:-overlap - 1])
+            else:
+                a_text =  ''.join(tokens)
+        # record = { doc_id_column: a[doc_id_column],
+        record = { doc_id_column: a.get(doc_id_column),
+                   # text_column: text_separator.join([a_text, b[text_column]]) }
+                   text_column: text_separator.join([a_text, b.get(text_column)]) }
+    else:
+        record = { doc_id_column: a.get(doc_id_column) }
 
     if mutually_exclusive:
         k = binary_targets[0]
@@ -129,10 +138,9 @@ def combine_two_records(binary_targets, text_separator, text_column, doc_id_colu
                 record[target] = a[target] + b[target]
 
     for key in original_keys:
-        # record[key] = a[key] if key in a else b[key]
-        record[key] = a.get(key) or b.get(key) or "meh"
+        record[key] = a.get(key) or b.get(key)
 
-    for key in remaining_keys:
+    for key in remaining_keys: # This part is used when original data is not supplied
         # If key present in just one of the records, grab that one
         if key in a and not key in b:
             record[key] = a[key]
@@ -161,7 +169,7 @@ def combine_two_records(binary_targets, text_separator, text_column, doc_id_colu
     return record
 
 
-def combine_records(records, text_separator = '', text_column = 'text', doc_id_column = 'doc_id', row_id_column = 'sentence_id', chunk_id_column = 'chunk_id', original_data = None, binary_targets = None, aggregation = 'any', overlap = 0):
+def combine_records(records, text_separator = '', text_column = None, doc_id_column = 'doc_id', row_id_column = 'sentence_id', chunk_id_column = 'chunk_id', original_data = None, binary_targets = None, vector_column = None, aggregation = 'any', overlap = 0, drop = list()):
     """ Combines dicts and concatenates text """
 
     records = iter(records)
@@ -188,9 +196,15 @@ def combine_records(records, text_separator = '', text_column = 'text', doc_id_c
         # if k in first_record:
         #     if not isinstance(first_record[k], list):
         #         first_record[k] = [first_record[k]] # Initial value needs to be a list
+    else:
+        for v in drop:
+            if v in binary_targets:
+                binary_targets.remove(v)
 
+    if vector_column:
+        drop.append(vector_column) # If text is pre-encoded vector, drop it
 
-    glue = partial(combine_two_records, binary_targets, text_separator, text_column, doc_id_column, row_id_column, chunk_id_column, overlap, original_data, mutually_exclusive)
+    glue = partial(combine_two_records, binary_targets, text_separator, text_column, doc_id_column, row_id_column, chunk_id_column, overlap, original_data, mutually_exclusive, drop)
 
     # Inspired by https://excamera.com/sphinx/article-islast.html - thanks!
     while True:
@@ -203,7 +217,10 @@ def combine_records(records, text_separator = '', text_column = 'text', doc_id_c
             else:
                 # Make sure the reduce function gets used, even if the document is length 1
                 if len(current_doc) == 0:
-                    current_doc = [{ text_column: '', doc_id_column: doc_id, row_id_column: 1 }]
+                    if text_column:
+                        current_doc = [{ text_column: '', doc_id_column: doc_id, row_id_column: 1 }]
+                    else:
+                        current_doc = [{ doc_id_column: doc_id, row_id_column: 1 }]
 
                 # Concat in order of row_id, not necessarily the order of the data (it might have been scrambled for some reason)
                 if row_id_column:
@@ -229,7 +246,10 @@ def combine_records(records, text_separator = '', text_column = 'text', doc_id_c
                     else:
                         for target in binary_targets: 
                             if not isinstance(fulltext[target], (int, np.integer)):
-                                obj = { text_column: fulltext[text_column], target: fulltext[target] }
+                                if text_column:
+                                    obj = { text_column: fulltext[text_column], target: fulltext[target] }
+                                else:
+                                    obj = { target: fulltext[target] }
                                 print()
                                 print('problematic object:')
                                 print(obj)
@@ -260,7 +280,10 @@ def combine_records(records, text_separator = '', text_column = 'text', doc_id_c
         except StopIteration: 
 
             if len(current_doc) == 0:
-                current_doc = [{ text_column: '', doc_id_column: doc_id, row_id_column: 1 }]
+                if text_column:
+                    current_doc = [{ text_column: '', doc_id_column: doc_id, row_id_column: 1 }]
+                else:
+                    current_doc = [{ doc_id_column: doc_id, row_id_column: 1 }]
             # Repeat the above for the very last record
             if row_id_column:
                 current_doc.sort(key = lambda r: r[row_id_column])
@@ -301,6 +324,10 @@ def combine_records(records, text_separator = '', text_column = 'text', doc_id_c
 
 
 # Helpers
+
+def pipeline_chain(pipelines, input):
+    return reduce(lambda a,f: f(a), pipelines, input)
+
 
 def get_used_keys(records):
     """ Get list of keys in iterable of row-based dicts """
@@ -407,6 +434,13 @@ def clamp(n, min, max):
         return n
 
 
+def if_undefined(arg, default):
+    if arg is None:
+        return default
+    else:
+        return arg
+
+
 def contains_minimum(a,b,c):
     return ((b - a) <= 0) and ((c - b) >= 0)
 
@@ -427,12 +461,12 @@ class Classifier:
     # model: str = 'KBLab/sentence-bert-swedish-cased'
     model: str = 'sentence-transformers/all-MiniLM-L6-v2' 
     text_column: str = 'text'
+    vector_column: str = None
     targets: list[str] = field(default_factory = list)
     id_columns: list[str] = field(default_factory = list)
     confounders: list[str] = field(default_factory = list)
     ignore: list[str] = field(default_factory = list)
     default_selection: float = 0.01
-    # discrete: bool = False
     default_cutoff: float = 0.5
     criteria: dict[dict] = field(default_factory = dict)
     mutually_exclusive: bool = False
@@ -454,6 +488,9 @@ class Classifier:
     text_column : str
         Name of the text column
 
+    vector_column : str
+        Optional name of the vector column. You can use either the text_column or vector_column to specify an embedding column, assuming you train and/or predict using pre_encoded = True. This argument exists because you may want a pipeline to predict using a vector and then concatenate the raw text. 
+
     targets : Optional[str]
         Names of the binary columns. Makes sense if there aren't many of these columns in your data. If there are more columns than you care to type and keep track of, specify the id_columns, confounders and ignore (explained below) and the targets will be inferred by exclusion.
 
@@ -469,7 +506,7 @@ class Classifier:
     default_selection: Optional[float]
         The share of dimensions to use, if not otherwise specified. The default value of 0.01 means you select 1% of the vector's 768 dimensions, meaning 8 dimensions. 
 
-    discrete: Optional[bool]
+    discrete: Optional[bool] --> Removed - use discrete = False in the predict() method to get raw similarities!
         Whether to round predictions to 0 or 1. False means the raw similarities are returned, which is handy if you want to evaluate the model's performance, eg by sorting the predictions in descending order or similarity score and reading through the texts. 
 
     default_cutoff: Optional[float]
@@ -491,7 +528,7 @@ class Classifier:
         Whether to show a progress bar or not while encoding text into embeddings.
 
     use_sample_probability: Optional[bool]
-        As a fallback, use sample probability to categorize variables.
+        As a fallback, use sample probability to categorize variables. Not recommended. 
     """
 
 
@@ -527,18 +564,14 @@ class Classifier:
         # Unpack training data, in case it's a generator
         self.training_data = [*ones_to_int(self.training_data, self.targets)]
         self.training_nrows = len(self.training_data)
-        self.training_data = [*remove_unused_keys(self.training_data, exceptions = [self.text_column])]
+        # self.training_data = [*remove_unused_keys(self.training_data, exceptions = [self.text_column])]
+        self.training_data = [*remove_unused_keys(self.training_data, exceptions = [self.text_column, self.vector_column])]
         # Infer the target columns if not explicitly given
         if not self.targets:
-            self.targets = sorted(list(set(get_used_keys(self.training_data)) - set([self.text_column] + self.confounders + self.id_columns + self.ignore)))
+            # self.targets = sorted(list(set(get_used_keys(self.training_data)) - set([self.text_column] + self.confounders + self.id_columns + self.ignore)))
+            self.targets = sorted(list(set(get_used_keys(self.training_data)) - set([self.text_column, self.vector_column] + self.confounders + self.id_columns + self.ignore)))
         # Put confounders last
         self.targets = sorted(list(set(self.targets))) + sorted(list(set(self.confounders)))
-
-        print('Targets:')
-        print(self.targets)
-        print()
-        print('Confounders:')
-        print(self.confounders)
 
         for t in self.targets:
             self.training_indices[t] = [i for i,v in enumerate(self.training_data) if t in v and int(v[t]) == 1]
@@ -549,7 +582,7 @@ class Classifier:
             print('***~~~ CALCULATING SAMPLE PROBABILITIES ~~~***')
             self.sample_probabilities = { k:round(len(v) / self.training_nrows, self.n_decimals) for k,v in self.training_indices.items() }
         else:
-            self.sample_probabilities = { k: None for k,v in self.training_indices.items() }
+            self.sample_probabilities = { k: 0 for k,v in self.training_indices.items() }
 
         # If any confounders are present, get those indices
         self.confounder_indices = {i for i,v in enumerate(self.training_data) for c in self.confounders if c in v and int(v[c]) == 1} if len(self.confounders) > 0 else set()
@@ -566,9 +599,13 @@ class Classifier:
     def encode_training_data(self, pre_encoded):
         if pre_encoded:
             # Text is pre-encoded embedding
-            if isinstance(self.training_data[0][self.text_column], str):
-                warnings.warn(f'Argument pre_encoded is set to {pre_encoded} but the first row of your text column seems to be raw text.', stacklevel = 2)
-            self.training_embeddings = np.vstack([r[self.text_column] for r in self.training_data])
+            # if isinstance(self.training_data[0][self.text_column], str):
+            #     warnings.warn(f'Argument pre_encoded is set to {pre_encoded} but the first row of your text column seems to be raw text.', stacklevel = 2)
+            # self.training_embeddings = np.vstack([r[self.text_column] for r in self.training_data])
+            vector_column = self.vector_column or self.text_column
+            if isinstance(self.training_data[0][vector_column], str):
+                warnings.warn(f'Argument pre_encoded is set to {pre_encoded} but the first row of your vector column "{vector_column}" seems to be raw text.', stacklevel = 2)
+            self.training_embeddings = np.vstack([r[vector_column] for r in self.training_data])
 
         else:
             # Text is string
@@ -640,6 +677,8 @@ class Classifier:
         if not self.trained:
             raise Exception('You need to train the model using the .train() method before saving it to disk.')
 
+        sample_probabilities = [self.sample_probabilities[t] for t in self.targets]
+
         (np.savez_compressed if compressed else np.savez) \
         (filename,
          central_tendency = dict_to_matrix(self.central_tendency, self.targets), 
@@ -647,10 +686,9 @@ class Classifier:
          targets = self.targets,
          confounders = self.confounders,
          combined_rank = dict_to_matrix(self.combined_rank, self.targets),
-         sample_probabilities = [self.sample_probabilities[t] for t in self.targets])
+         sample_probabilities = sample_probabilities)
         print(f'Saved model to {os.path.join(os.getcwd(), filename)}.')
         print()
-
 
     def from_npz(self, filename):
 
@@ -661,12 +699,11 @@ class Classifier:
         for property in 'targets confounders'.split():
             self.__dict__[property] = a[property].tolist() # Convert from numpy string array
 
-        # for property in 'sample_probabilities'.split():
-        #     self.__dict__[property] = a[property]
-
+        # sample_probabilities
         for property in 'central_tendency filter combined_rank'.split():
             self.__dict__[property] = matrix_to_dict(a[property], self.targets)
-        self.sample_probabilities = dict([(t, a['sample_probabilities'][i,]) for i,t in enumerate(self.targets)])
+
+        self.__dict__['sample_probabilities'] = { key: a['sample_probabilities'][i] for i,key in enumerate(self.targets) }
 
         self.trained = True
         print(f'Loaded model from {os.path.join(os.getcwd(), filename)}.')
@@ -676,16 +713,27 @@ class Classifier:
     # PREDICTION
 
     def encode_prediction_data(self, pre_encoded):
-        text_column_present = [self.text_column in r for r in self.prediction_data]
-        if not any([self.text_column in r for r in self.prediction_data]):
-            raise Exception(f'None of the records contains the given text field "{self.text_column}"')
-        if not all([self.text_column in r for r in self.prediction_data]):
-            raise Exception(f'At least one of the records does not contain the given text field "{self.text_column}"')
+        if pre_encoded:
+            vector_column = self.vector_column or self.text_column
+            text_column_present = [vector_column in r for r in self.prediction_data]
+            if not any([vector_column in r for r in self.prediction_data]):
+                raise Exception(f'None of the records contains the given text field "{vector_column}"')
+            if not all([vector_column in r for r in self.prediction_data]):
+                raise Exception(f'At least one of the records does not contain the given text field "{vector_column}"')
+        else:
+            text_column_present = [self.text_column in r for r in self.prediction_data]
+            if not any([self.text_column in r for r in self.prediction_data]):
+                raise Exception(f'None of the records contains the given text field "{self.text_column}"')
+            if not all([self.text_column in r for r in self.prediction_data]):
+                raise Exception(f'At least one of the records does not contain the given text field "{self.text_column}"')
 
         if pre_encoded:
-            if isinstance(self.prediction_data[0][self.text_column], str):
-                warnings.warn(f'Argument pre_encoded is set to {pre_encoded} but the first row of your text column seems to be raw text.', stacklevel = 2)
-            self.prediction_embeddings = np.vstack([r[self.text_column] for r in self.prediction_data])
+            # if isinstance(self.prediction_data[0][self.text_column], str):
+            #     warnings.warn(f'Argument pre_encoded is set to {pre_encoded} but the first row of your text column seems to be raw text.', stacklevel = 2)
+            # self.prediction_embeddings = np.vstack([r[self.text_column] for r in self.prediction_data])
+            if isinstance(self.prediction_data[0][vector_column], str):
+                warnings.warn(f'Argument pre_encoded is set to {pre_encoded} but the first row of your vector column "{vector_column}" seems to be raw text.', stacklevel = 2)
+            self.prediction_embeddings = np.vstack([r[vector_column] for r in self.prediction_data])
         else:
             if isinstance(self.prediction_data[0][self.text_column], (np.ndarray)):
                 warnings.warn(f'Argument pre_encoded is set to {pre_encoded}, meaning column "{self.text_column}" should be raw text, but at least one of these values is a numpy array. Are you using pre-encoded embeddings?', stacklevel = 2)
@@ -755,7 +803,7 @@ class Classifier:
 
 
 
-    def max_category(self):
+    def max_category(self, pre_encoded, keep_vector):
         """Return the most likely category, out of all candidates"""
         self.output_fieldnames = [self.text_column] + self.targets
         # similarity_matrix = np.zeros((self.prediction_nrows, len(self.targets)))
@@ -769,24 +817,43 @@ class Classifier:
 
         # other_keys = sorted(list(get_used_keys(self.prediction_data) - set(self.targets)))
         other_keys = sorted(list(get_used_keys(self.prediction_data))) # Keep original variables
+        if pre_encoded:
+            other_keys.remove(self.vector_column or self.text_column)
         other_data = filter_keys(self.prediction_data, other_keys)
         predicted_data = dict_to_records({'predicted': [ self.targets[index] for index in self.index_predictions ],
                                           'score': [ np.round(score, self.n_decimals) for score in max_scores ]
                                          })
-        self.output = zip_longest(other_data, predicted_data)
+
+        if keep_vector:
+            # vector_column = self.text_column if pre_encoded else self.vector_column
+            vector_column = self.vector_column or self.text_column
+            embeddings = ({ vector_column: e } for e in self.prediction_embeddings)
+            self.output = zip_longest(other_data, predicted_data, embeddings)
+        else:
+            self.output = zip_longest(other_data, predicted_data)
 
 
 
-    def update_predictions(self, discrete):
+    def update_predictions(self, discrete, pre_encoded, keep_vector):
         self.output_fieldnames = [self.text_column] + self.targets
         other_keys = sorted(list(get_used_keys(self.prediction_data) - set(self.targets)))
+        if pre_encoded:
+            other_keys.remove(self.vector_column or self.text_column)
         other_data = filter_keys(self.prediction_data, other_keys)
         # predicted_data = dict_to_records(self.predictions if self.discrete else self.similarities)
         predicted_data = dict_to_records(self.predictions if discrete else self.similarities)
-        self.output = zip_longest(other_data, predicted_data)
+
+        if keep_vector:
+            # vector_column = self.text_column if pre_encoded else self.vector_column
+            vector_column = self.vector_column or self.text_column
+            embeddings = ({ vector_column: e } for e in self.prediction_embeddings)
+            self.output = zip_longest(other_data, predicted_data, embeddings)
+        else:
+            self.output = zip_longest(other_data, predicted_data)
 
 
-    def predict(self, data = None, discrete = True, pre_encoded = False, validation = False):
+    def predict(self, data = None, discrete = True, pre_encoded = False, validation = False, keep_vector = False):
+
         if not self.trained:
             raise Exception('You need to train the model (or load a trained model from file) before calling the predict method')
         # if validation and not self.discrete:
@@ -801,13 +868,17 @@ class Classifier:
         self.measure_similarity()
         self.binarize()
         if self.mutually_exclusive:
-            self.max_category()
+            self.max_category(pre_encoded, keep_vector)
         else:
-            self.update_predictions(discrete)
+            self.update_predictions(discrete, pre_encoded, keep_vector)
         if validation:
             self.validate()
-        for a,b in self.output:
-            yield {**a, **b}
+        if keep_vector:
+            for a,b,c in self.output:
+                yield {**a, **b, **c}
+        else:
+            for a,b in self.output:
+                yield {**a, **b}
 
 
 
@@ -824,7 +895,8 @@ class Classifier:
 
         keys = sorted(list(set(keys).intersection(self.targets)))
 
-        self.validation_data =  [*filter_keys(self.validation_data, [self.text_column] + keys)]
+        # self.validation_data =  [*filter_keys(self.validation_data, [self.text_column] + keys)]
+        self.validation_data =  [*filter_keys(self.validation_data, keys)]
 
         validation_matrix = records_to_dict(self.validation_data, keys)
         validation_matrix = dict_to_matrix(validation_matrix, keys)
@@ -1041,9 +1113,13 @@ class Classifier:
         if not self.prediction_data:
             sys.exit('No prediction data')
         import csv
-        data = {**{self.text_column: [d[self.text_column] for d in self.prediction_data]}, 
-                **(self.predictions if discrete else self.similarities)}
-                # **(self.predictions if self.discrete else self.similarities)}
+
+        try: # Independent variable might be self.vector_column and then self.text_column might not exist in the data
+            data = {**{self.text_column: [d[self.text_column] for d in self.prediction_data]}, 
+                    **(self.predictions if discrete else self.similarities)}
+        except: # If text column not found, try writing just the predictions
+            data = self.predictions if discrete else self.similarities
+
         data = dict_to_records(data)
         data = [*filter_keys(data, self.output_fieldnames)]
         with open(filename, 'w', newline = '') as csvfile:
@@ -1145,6 +1221,10 @@ class Classifier:
     def examples(self, targets = None, n = 10, w = 10, margin = 5):
         if self.mutually_exclusive:
             raise Exception('Classifier.examples() method not yet available for mutually exclusive data.')
+
+        if isinstance(self.prediction_data[0][self.text_column], np.ndarray):
+            raise Exception(f'Your text column "{self.text_column}" seems to be an embedding. The .examples() method is meant to display raw text.')
+
         targets = targets or self.targets
         sim_w = self.n_decimals + margin
         print('\n' * 2)
@@ -1171,30 +1251,49 @@ class Classifier:
 
 
 
-    def to_pipeline(self, n = 100, split = True, timeout = 10, **kwargs):
+    def to_pipeline(self, **kwargs):
 
-        # Make sure our classifier is using the latest text column for prediction, if given in kwargs
+        # Make sure our classifier is using the latest text column and possibly vector column for prediction, if given in kwargs
         if kwargs.get('text_column'):
-            text_column = kwargs.get('text_column')# or self.text_column
+            text_column = kwargs.get('text_column')
             if text_column != self.text_column:
-                print(f'Using text column "{text_column}" for prediction instead of "{self.text_column}" which was most likely used for training.')
+                print(f'Using text column "{text_column}" for prediction instead of the previous one: "{self.text_column}".')
             self.text_column = text_column
 
-        aggregation = kwargs.get('aggregation')
-        # if not self.discrete:
-        #     if not aggregation or aggregation in "absolute sum relative share".split():
-        #         self.discrete = True
-        #         print()
-        #         print(f'Classifier set to produce discrete values, given that argument aggregation = "{aggregation}".')
-        #         print()
+        if kwargs.get('vector_column'):
+            vector_column = kwargs.get('vector_column')
+            if vector_column != self.vector_column:
+                print(f'Using vector column "{vector_column}" for prediction instead of the previous one: "{self.vector_column}".')
+            self.vector_column = vector_column
 
-        predict_args = "pre_encoded validation".split()
+        kwargs['pre_encoded'] = if_undefined(kwargs.get('pre_encoded'), False) # Needs default value
+
+        kwargs['drop'] = kwargs.get('drop') or list()
+
+        if kwargs.get('pre_encoded'):
+            kwargs['split'] = False # Cannot split records with pre-encoded vectors
+            if self.vector_column:
+                kwargs['text_column'] = self.text_column
+                kwargs['vector_column'] = self.vector_column
+            else:
+                kwargs['text_column'] = None # Ignore and drop text_column if it's a pre-encoded vector
+                kwargs['drop'].append(self.text_column)
+        else:
+            kwargs['split'] = if_undefined(kwargs.get('split'), True) # Needs default value
+
+        kwargs['combine'] = if_undefined(kwargs.get('combine'), True) # Needs default value
+
+        if kwargs.get('keep_vector') and kwargs.get('combine'):
+            raise Exception(f'Arguments keep_vector and combine cannot simultaneously be set to True, as vectors cannot be concatenated the same way as raw text. Exiting!')
+
+        predict_args = "pre_encoded validation keep_vector".split()
         predict_args = { k:v for k,v in kwargs.items() if k in predict_args }
 
         split_args = "text_column max_sequence_length doc_id_column row_id_column chunk_id_column overlap per_sentence".split()
         split_args = { k:v for k,v in kwargs.items() if k in split_args }
 
-        combine_args = "text_separator text_column doc_id_column row_id_column chunk_id_column original_data binary_targets aggregation overlap".split()
+        # combine_args = "text_separator text_column doc_id_column row_id_column chunk_id_column original_data binary_targets aggregation overlap".split()
+        combine_args = "text_separator text_column vector_column doc_id_column row_id_column chunk_id_column aggregation overlap drop".split()
         combine_args = { k:v for k,v in kwargs.items() if k in combine_args }
 
         from types import GeneratorType
@@ -1209,12 +1308,18 @@ class Classifier:
 
                 prediction_data = ones_to_int(prediction_data, self.targets)
                 prediction_data = [*prediction_data] # Need to unpack, no way to copy a generator
-                original_data = prediction_data.copy()
-                if split:
+                # original_data = prediction_data.copy()
+
+                if kwargs.get('split'):
+                    original_data = prediction_data.copy()
                     prediction_data = split_records(prediction_data, **split_args)
                 predicted = self.predict(data = prediction_data, **predict_args)
-                if split:
-                    predicted = combine_records(predicted, original_data = original_data, binary_targets = self.targets, **combine_args)
+
+                if kwargs.get('combine'):
+                    if kwargs.get('split'):
+                        predicted = combine_records(predicted, original_data = original_data, binary_targets = self.targets, **combine_args)
+                    else:
+                        predicted = combine_records(predicted, binary_targets = self.targets, **combine_args)
                 yield from predicted
             else:
                 raise Exception(f'Unknown/incompatible data type: {type(prediction_data)}')

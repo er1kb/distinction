@@ -7,7 +7,7 @@ packages = ["src/distinction"]
 
 [project]
 name = "distinction"
-version = "0.0.1.4"
+version = "0.0.1.5"
 license = "MIT"
 authors = [
   { name="Erik Broman", email="mikroberna@gmail.com" },
